@@ -138,6 +138,7 @@ void setup() {
   pinMode(PIN_ENC_CLK, INPUT_PULLUP); pinMode(PIN_ENC_DT, INPUT_PULLUP); pinMode(PIN_ENC_SW, INPUT_PULLUP);
   prefs.begin("remoteData", false); 
   sysBrightness = prefs.getInt("brightness", 128); currentTVBrand = prefs.getInt("tvBrand", 0);
+  acBrandIndex = prefs.getInt("acBrand", 0);
   customGroupCount = prefs.getInt("grpCount", 4);
   if (customGroupCount > MAX_CUSTOM_GROUPS) customGroupCount = MAX_CUSTOM_GROUPS; if (customGroupCount < 1) customGroupCount = 1;
   initGroupNames(); 
@@ -214,8 +215,9 @@ void handleShortPress() {
     isEditing = false; 
     if (currentState == SETTINGS_MENU && cursorIndex == 0) prefs.putInt("brightness", sysBrightness);
     
-    // 【修复】空调确认协议后发送测试信号
+    // 【修复】空调确认协议后：1.保存进Flash，2.发送测试信号
     if (currentState == AC_MENU && cursorIndex == 0) {
+      prefs.putInt("acBrand", acBrandIndex); // <--- 将最新选中的空调协议固化到 NVS
       bool tempPower = acPower; acPower = false; sendACCommand(); acPower = tempPower;
       showToast("Test Sent!");
     }
