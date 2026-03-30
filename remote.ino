@@ -16,14 +16,15 @@
 #define PIN_IR_RX    27
 
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, PIN_OLED_SCL, PIN_OLED_SDA);
-IRsend irsend(PIN_IR_TX);
+IRsend irsend(PIN_IR_TX); // 已修复为默认：不反相，开启38kHz调制
 IRrecv irrecv(PIN_IR_RX, 1024, 15, true);
 decode_results results;
 Preferences prefs;
 IRac ac(PIN_IR_TX);
 
 // ================= 状态机与菜单引擎 =================
-enum AppState { BOOT, MAIN_MENU, TV_MENU, TV_BRAND, AC_MENU, LEARN_GRP, LEARN_ACT, LEARN_WAIT, CUSTOM_GRP, CUSTOM_ACT, SETTINGS_MENU, GRP_MANAGE, RENAME_SEL, RENAME_EDIT, GRP_INSERT_SEL, GRP_DELETE_SEL };
+// 【新增】SIGNAL_ANALYSIS 信号分析状态
+enum AppState { BOOT, MAIN_MENU, TV_MENU, TV_BRAND, AC_MENU, LEARN_GRP, LEARN_ACT, LEARN_WAIT, CUSTOM_GRP, CUSTOM_ACT, SETTINGS_MENU, GRP_MANAGE, RENAME_SEL, RENAME_EDIT, GRP_INSERT_SEL, GRP_DELETE_SEL, SIGNAL_ANALYSIS };
 AppState currentState = BOOT;
 
 int cursorIndex = 0;      
@@ -32,6 +33,11 @@ int currentMenuSize = 0;
 bool needsRedraw = true;
 bool isEditing = false;   
 int sysBrightness = 128; 
+
+// 【新增】信号分析仪的全局变量
+String analyzedProtocol = "等待信号...";
+String analyzedValue = "---";
+String analyzedBits = "---";
 
 // ================= 📺 电视字典 =================
 int currentTVBrand = 0;  
@@ -150,6 +156,8 @@ void setup() {
 
 void loop() {
   readEncoder();
+  
+  // 原有的学习逻辑
   if (currentState == LEARN_WAIT) {
     if (irrecv.decode(&results)) {
       if (results.decode_type == UNKNOWN || results.bits < 8) { showToast("Error! 信号太弱"); } 
@@ -157,6 +165,19 @@ void loop() {
       irrecv.resume(); 
     }
   }
+  
+  // 【新增】持续侦听的红外信号分析仪逻辑
+  if (currentState == SIGNAL_ANALYSIS) {
+    if (irrecv.decode(&results)) {
+      analyzedProtocol = typeToString(results.decode_type);
+      analyzedValue = "0x" + uint64ToString(results.value, 16);
+      analyzedValue.toUpperCase();
+      analyzedBits = String(results.bits) + " bit";
+      irrecv.resume();
+      needsRedraw = true;
+    }
+  }
+  
   updateDisplay();
 }
 
@@ -174,7 +195,6 @@ void readEncoder() {
     
     if (isEditing) {
       if (currentState == SETTINGS_MENU && cursorIndex == 0) {
-        // 【修复】下探极小值0，让差异稍微明显一些
         sysBrightness += direction * 15; 
         if (sysBrightness > 255) sysBrightness = 255; if (sysBrightness < 0) sysBrightness = 0;
         u8g2.setContrast(sysBrightness); 
@@ -209,21 +229,23 @@ void readEncoder() {
   }
 }
 
-// ---------------- 按键逻辑 (包含盲测修复) ----------------
+// ---------------- 按键逻辑 ----------------
 void handleShortPress() {
   if (isEditing) {
     isEditing = false; 
     if (currentState == SETTINGS_MENU && cursorIndex == 0) prefs.putInt("brightness", sysBrightness);
     
-    // 【修复】空调确认协议后：1.保存进Flash，2.发送测试信号
     if (currentState == AC_MENU && cursorIndex == 0) {
-      prefs.putInt("acBrand", acBrandIndex); // <--- 将最新选中的空调协议固化到 NVS
+      prefs.putInt("acBrand", acBrandIndex);
       bool tempPower = acPower; acPower = false; sendACCommand(); acPower = tempPower;
       showToast("Test Sent!");
     }
     needsRedraw = true; return;
   }
+  
+  // 在特殊捕获状态短按，直接退回
   if (currentState == LEARN_WAIT) { changeMenu(LEARN_ACT, CUSTOM_ACT_COUNT); return; }
+  if (currentState == SIGNAL_ANALYSIS) { changeMenu(SETTINGS_MENU, 6); return; } // 退回设置菜单
 
   switch (currentState) {
     case MAIN_MENU:
@@ -231,14 +253,13 @@ void handleShortPress() {
       else if (cursorIndex == 1) changeMenu(AC_MENU, 7); 
       else if (cursorIndex == 2) changeMenu(LEARN_GRP, customGroupCount); 
       else if (cursorIndex == 3) changeMenu(CUSTOM_GRP, customGroupCount); 
-      else if (cursorIndex == 4) changeMenu(SETTINGS_MENU, 5);
+      else if (cursorIndex == 4) changeMenu(SETTINGS_MENU, 6); // 【修改】现在设置有 6 项了
       break;
       
     case TV_MENU: if (cursorIndex == 0) changeMenu(TV_BRAND, TV_BRAND_COUNT); else sendTVCommand(currentTVBrand, cursorIndex - 1); break;
     case TV_BRAND: 
       currentTVBrand = cursorIndex; prefs.putInt("tvBrand", currentTVBrand); 
-      // 【修复】电视确认品牌后发送开机信号并退回
-      sendTVCommand(currentTVBrand, 0); // 索引 0 是电源键
+      sendTVCommand(currentTVBrand, 0); 
       changeMenu(TV_MENU, TV_ACTION_COUNT + 1); 
       break;
       
@@ -252,13 +273,19 @@ void handleShortPress() {
 
     case SETTINGS_MENU:
       if (cursorIndex == 0) isEditing = true; 
-      else if (cursorIndex == 1) changeMenu(GRP_MANAGE, 3); 
-      else if (cursorIndex == 2) { runBootSequence(); changeMenu(MAIN_MENU, 5); } 
-      else if (cursorIndex == 3) { 
+      else if (cursorIndex == 1) { 
+        // 【新增】进入红外信号分析仪
+        analyzedProtocol = "等待接收..."; analyzedValue = "---"; analyzedBits = "---";
+        changeMenu(SIGNAL_ANALYSIS, 1); 
+        while(irrecv.decode(&results)) { irrecv.resume(); } // 清空历史残余信号
+      }
+      else if (cursorIndex == 2) changeMenu(GRP_MANAGE, 3); 
+      else if (cursorIndex == 3) { runBootSequence(); changeMenu(MAIN_MENU, 5); } 
+      else if (cursorIndex == 4) { 
         prefs.clear(); prefs.putInt("brightness", sysBrightness); prefs.putInt("tvBrand", currentTVBrand); 
         customGroupCount = 4; prefs.putInt("grpCount", customGroupCount); initGroupNames(); showToast("系统已重置!");
       }
-      else if (cursorIndex == 4) showToast("Ver 10.0 | Perfect UX"); 
+      else if (cursorIndex == 5) showToast("Ver 11.0 | Analyzer"); 
       break;
 
     case GRP_MANAGE:
@@ -290,16 +317,14 @@ void handleShortPress() {
   }
 }
 
-// ---------------- 长按逻辑 (真正的层级“返回键”带记忆) ----------------
+// ---------------- 长按逻辑 ----------------
 void handleLongPress() { 
-  if (currentState == MAIN_MENU) return; // 在最顶层主菜单时长按无动作
+  if (currentState == MAIN_MENU) return; 
 
-  // 定义要退回的上级状态、菜单项数量和光标记忆位置
   AppState prevState = MAIN_MENU;
   int prevItemCount = 5;
   int prevCursor = 0;
 
-  // 1. 从一级子菜单退回主菜单
   if (currentState == TV_MENU || currentState == AC_MENU || currentState == LEARN_GRP || currentState == CUSTOM_GRP || currentState == SETTINGS_MENU) {
     prevState = MAIN_MENU; prevItemCount = 5;
     if (currentState == TV_MENU) prevCursor = 0;
@@ -308,27 +333,22 @@ void handleLongPress() {
     else if (currentState == CUSTOM_GRP) prevCursor = 3;
     else prevCursor = 4;
   }
-  // 2. 电视模块内退回
   else if (currentState == TV_BRAND) { prevState = TV_MENU; prevItemCount = TV_ACTION_COUNT + 1; prevCursor = 0; }
-  
-  // 3. 学习模块内退回
   else if (currentState == LEARN_ACT) { prevState = LEARN_GRP; prevItemCount = customGroupCount; prevCursor = targetGroup; }
   else if (currentState == LEARN_WAIT) { prevState = LEARN_ACT; prevItemCount = CUSTOM_ACT_COUNT; prevCursor = targetAction; }
-  
-  // 4. 自定义控制模块内退回 (解决你的核心痛点)
   else if (currentState == CUSTOM_ACT) { prevState = CUSTOM_GRP; prevItemCount = customGroupCount; prevCursor = targetGroup; }
   
-  // 5. 设置及组管理模块内退回
-  else if (currentState == GRP_MANAGE) { prevState = SETTINGS_MENU; prevItemCount = 5; prevCursor = 1; }
+  // 【修改】适配设置菜单增加了分析仪选项后的光标位置
+  else if (currentState == GRP_MANAGE) { prevState = SETTINGS_MENU; prevItemCount = 6; prevCursor = 2; }
+  else if (currentState == SIGNAL_ANALYSIS) { prevState = SETTINGS_MENU; prevItemCount = 6; prevCursor = 1; }
+  
   else if (currentState == RENAME_SEL) { prevState = GRP_MANAGE; prevItemCount = 3; prevCursor = 0; }
   else if (currentState == GRP_INSERT_SEL) { prevState = GRP_MANAGE; prevItemCount = 3; prevCursor = 1; }
   else if (currentState == GRP_DELETE_SEL) { prevState = GRP_MANAGE; prevItemCount = 3; prevCursor = 2; }
   else if (currentState == RENAME_EDIT) { prevState = RENAME_SEL; prevItemCount = customGroupCount; prevCursor = renameTargetGrp; }
 
-  // 执行底层状态切换
   changeMenu(prevState, prevItemCount);
   
-  // 恢复记忆的光标位置，并平滑计算滚动条 (让光标尽量居中显示)
   cursorIndex = prevCursor;
   scrollOffset = cursorIndex - 1; 
   if (scrollOffset < 0) scrollOffset = 0;
@@ -381,9 +401,19 @@ void updateDisplay() {
     }
     case LEARN_WAIT: u8g2.drawFrame(5, 10, 118, 44); u8g2.setCursor(20, 25); u8g2.print("进入捕获模式"); u8g2.setCursor(15, 43); u8g2.print("请对准接收头按下"); u8g2.setCursor(25, 61); u8g2.print("[短按取消]"); break;
     
+    // 【新增UI】红外信号分析仪界面
+    case SIGNAL_ANALYSIS:
+      u8g2.drawFrame(0, 0, 128, 64);
+      u8g2.setCursor(5, 12); u8g2.print("📡 红外信号分析仪"); u8g2.drawLine(0, 15, 128, 15);
+      u8g2.setCursor(5, 30); u8g2.print("协议: " + analyzedProtocol);
+      u8g2.setCursor(5, 45); u8g2.print("键值: " + analyzedValue);
+      u8g2.setCursor(5, 60); u8g2.print("位宽: " + analyzedBits);
+      break;
+
     case SETTINGS_MENU: {
-      String dynSet[5] = { "亮度: " + String(sysBrightness), "自定义组管理", "重新自检", "清空系统数据", "关于本机" };
-      const char* setPtrs[5]; for(int i=0; i<5; i++) setPtrs[i] = dynSet[i].c_str();
+      // 【修改】插入分析仪选项到第 2 项
+      String dynSet[6] = { "亮度: " + String(sysBrightness), "📡 红外信号分析", "自定义组管理", "重新自检", "清空系统数据", "关于本机" };
+      const char* setPtrs[6]; for(int i=0; i<6; i++) setPtrs[i] = dynSet[i].c_str();
       drawScrollMenu("系统设置", setPtrs); break;
     }
     default: u8g2.setCursor(10, 30); u8g2.print("模块开发中..."); break;
@@ -409,13 +439,11 @@ void drawRenameEdit() { u8g2.setCursor(0, 12); u8g2.print("📝 组名编辑"); 
 void drawACDashboard() { u8g2.setCursor(0, 12); u8g2.print("❄️ 空调超级引擎"); u8g2.drawLine(0, 15, 128, 15); String acItems[7] = { "协议: " + typeToString(acProtocols[acBrandIndex]), "电源: " + String(acPower ? "ON" : "OFF"), "模式: " + String(acModeNames[acMode]), "温度: " + String(acTemp) + " C", "风速: " + String(acFanNames[acFan]), "扫风: " + String(acSwing ? "打开" : "关闭"), "[ 发送状态指令 >>> ]" }; for (int i = 0; i < 3; i++) { int itemIdx = scrollOffset + i; if (itemIdx >= 7) break; int yPos = 28 + (i * 14); if (itemIdx == cursorIndex) { if (isEditing) u8g2.drawFrame(0, yPos - 11, 128, 14); else { u8g2.setDrawColor(1); u8g2.drawBox(0, yPos - 11, 128, 14); u8g2.setDrawColor(0); } u8g2.setCursor(4, yPos); u8g2.print(acItems[itemIdx].c_str()); u8g2.setDrawColor(1); } else { u8g2.setCursor(4, yPos); u8g2.print(acItems[itemIdx].c_str()); } } u8g2.drawBox(126, 16 + (48 - 6) * cursorIndex / 6, 2, 6); }
 void showToast(const char* msg) { u8g2.clearBuffer(); u8g2.drawRBox(10, 20, 108, 24, 4); u8g2.setDrawColor(0); u8g2.setCursor(20, 36); u8g2.print(msg); u8g2.setDrawColor(1); u8g2.sendBuffer(); delay(800); needsRedraw = true; }
 
-// 【修复】自检极度宽容模式：只要接受到任何红外脉冲即算通过
 void runBootSequence() { u8g2.clearBuffer(); u8g2.setFont(u8g2_font_wqy12_t_gb2312a); u8g2.setCursor(15, 20); u8g2.print("Universal Remote"); u8g2.setCursor(10, 45); u8g2.print("OLED & NVS ... OK"); u8g2.sendBuffer(); delay(800); u8g2.clearBuffer(); u8g2.setCursor(5, 20); u8g2.print("IR 自检启动..."); u8g2.setCursor(5, 40); u8g2.print("请将手掌放在红外"); u8g2.setCursor(5, 55); u8g2.print("模块上方进行反射"); u8g2.sendBuffer(); bool irPassed = false; unsigned long testStart = millis(); 
   while (millis() - testStart < 5000) { 
-    while(irrecv.decode(&results)) { irrecv.resume(); } // 清空旧数据
+    while(irrecv.decode(&results)) { irrecv.resume(); } 
     irsend.sendNEC(0x87654321, 32); delay(30); 
     if (irrecv.decode(&results)) { 
-      // 只要接收管看到任何光信号脉冲（自己的反射或别人按的遥控器），瞬间通过
       if (results.bits > 8) { irPassed = true; break; } 
     } 
     delay(150); 
