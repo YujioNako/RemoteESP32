@@ -16,7 +16,7 @@
 #define PIN_IR_RX    27
 
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, PIN_OLED_SCL, PIN_OLED_SDA);
-IRsend irsend(PIN_IR_TX, false, false); // 若使用三极管反相放大器请改为 true, false
+IRsend irsend(PIN_IR_TX);
 IRrecv irrecv(PIN_IR_RX, 1024, 15, true);
 decode_results results;
 Preferences prefs;
