@@ -117,47 +117,61 @@ unsigned long lastButtonPress = 0;
 bool isLongPress = false;
 
 // ================= 数据平移引擎 =================
+// 覆盖原函数
 void copyGroupData(int srcGrp, int dstGrp) {
   prefs.putInt(("g_l_" + String(dstGrp)).c_str(), prefs.getInt(("g_l_" + String(srcGrp)).c_str(), 0));
   prefs.putInt(("g_d_" + String(dstGrp)).c_str(), prefs.getInt(("g_d_" + String(srcGrp)).c_str(), 0));
   prefs.putInt(("g_n_" + String(dstGrp)).c_str(), prefs.getInt(("g_n_" + String(srcGrp)).c_str(), 0));
   for (int act = 0; act < CUSTOM_ACT_COUNT; act++) {
-    char sT[15], sH[15], sL[15], sB[15], dT[15], dH[15], dL[15], dB[15];
-    sprintf(sT, "t_%d_%d", srcGrp, act);
-    sprintf(sH, "h_%d_%d", srcGrp, act);
-    sprintf(sL, "l_%d_%d", srcGrp, act);
-    sprintf(sB, "b_%d_%d", srcGrp, act);
-    sprintf(dT, "t_%d_%d", dstGrp, act);
-    sprintf(dH, "h_%d_%d", dstGrp, act);
-    sprintf(dL, "l_%d_%d", dstGrp, act);
-    sprintf(dB, "b_%d_%d", dstGrp, act);
+    char sT[15], sH[15], sL[15], sB[15], sR[15], sRL[15], dT[15], dH[15], dL[15], dB[15], dR[15], dRL[15];
+    sprintf(sT, "t_%d_%d", srcGrp, act); sprintf(dT, "t_%d_%d", dstGrp, act);
+    sprintf(sH, "h_%d_%d", srcGrp, act); sprintf(dH, "h_%d_%d", dstGrp, act);
+    sprintf(sL, "l_%d_%d", srcGrp, act); sprintf(dL, "l_%d_%d", dstGrp, act);
+    sprintf(sB, "b_%d_%d", srcGrp, act); sprintf(dB, "b_%d_%d", dstGrp, act);
+    sprintf(sR, "r_%d_%d", srcGrp, act); sprintf(dR, "r_%d_%d", dstGrp, act);
+    sprintf(sRL, "rl_%d_%d", srcGrp, act); sprintf(dRL, "rl_%d_%d", dstGrp, act);
+    
     if (prefs.isKey(sT)) {
       prefs.putInt(dT, prefs.getInt(sT));
-      prefs.putUInt(dH, prefs.getUInt(sH));
-      prefs.putUInt(dL, prefs.getUInt(sL));
-      prefs.putInt(dB, prefs.getInt(sB));
+      if (prefs.isKey(sH)) prefs.putUInt(dH, prefs.getUInt(sH)); else prefs.remove(dH);
+      if (prefs.isKey(sL)) prefs.putUInt(dL, prefs.getUInt(sL)); else prefs.remove(dL);
+      if (prefs.isKey(sB)) prefs.putInt(dB, prefs.getInt(sB)); else prefs.remove(dB);
+      if (prefs.isKey(sRL)) {
+        int rLen = prefs.getInt(sRL);
+        prefs.putInt(dRL, rLen);
+        uint16_t tmp[rLen];
+        prefs.getBytes(sR, tmp, rLen * sizeof(uint16_t));
+        prefs.putBytes(dR, tmp, rLen * sizeof(uint16_t));
+      } else {
+        prefs.remove(dR);
+        prefs.remove(dRL);
+      }
     } else {
-      prefs.remove(dT);
-      prefs.remove(dH);
-      prefs.remove(dL);
-      prefs.remove(dB);
+      prefs.remove(dT); prefs.remove(dH); prefs.remove(dL); 
+      prefs.remove(dB); prefs.remove(dR); prefs.remove(dRL);
     }
   }
 }
+
+// 覆盖原函数
 void clearGroupData(int grp) {
   prefs.remove(("g_l_" + String(grp)).c_str());
   prefs.remove(("g_d_" + String(grp)).c_str());
   prefs.remove(("g_n_" + String(grp)).c_str());
   for (int act = 0; act < CUSTOM_ACT_COUNT; act++) {
-    char T[15], H[15], L[15], B[15];
+    char T[15], H[15], L[15], B[15], R[15], RL[15];
     sprintf(T, "t_%d_%d", grp, act);
     sprintf(H, "h_%d_%d", grp, act);
     sprintf(L, "l_%d_%d", grp, act);
     sprintf(B, "b_%d_%d", grp, act);
+    sprintf(R, "r_%d_%d", grp, act);
+    sprintf(RL, "rl_%d_%d", grp, act);
     prefs.remove(T);
     prefs.remove(H);
     prefs.remove(L);
     prefs.remove(B);
+    prefs.remove(R);
+    prefs.remove(RL);
   }
 }
 void insertGroupAt(int index) {
@@ -639,33 +653,74 @@ void sendACCommand() {
 }
 
 void saveIRCode(int grp, int act, decode_results* res) {
-  char keyT[15], keyH[15], keyL[15], keyB[15];
+  char keyT[15], keyH[15], keyL[15], keyB[15], keyR[15], keyRL[15];
   sprintf(keyT, "t_%d_%d", grp, act);
   sprintf(keyH, "h_%d_%d", grp, act);
   sprintf(keyL, "l_%d_%d", grp, act);
   sprintf(keyB, "b_%d_%d", grp, act);
+  sprintf(keyR, "r_%d_%d", grp, act);    // 专门用于存放 raw 数组的 key
+  sprintf(keyRL, "rl_%d_%d", grp, act);  // 专门用于存放 raw 数组长度的 key
+
   prefs.putInt(keyT, res->decode_type);
-  prefs.putUInt(keyH, (uint32_t)(res->value >> 32));
-  prefs.putUInt(keyL, (uint32_t)(res->value & 0xFFFFFFFF));
-  prefs.putInt(keyB, res->bits);
+
+  if (res->decode_type != UNKNOWN) {
+    // 标准协议，正常存储十六进制数据
+    prefs.putUInt(keyH, (uint32_t)(res->value >> 32));
+    prefs.putUInt(keyL, (uint32_t)(res->value & 0xFFFFFFFF));
+    prefs.putInt(keyB, res->bits);
+    // 清除可能残留的 RAW 数据
+    prefs.remove(keyR);
+    prefs.remove(keyRL);
+  } else {
+    // 未知协议，提取生脉冲数据 (抛弃第0位的起始间隔)
+    uint16_t rawLen = res->rawlen - 1;
+    uint16_t rawArray[rawLen];
+    for (int i = 1; i <= rawLen; i++) {
+      rawArray[i - 1] = res->rawbuf[i] * kRawTick;
+    }
+    // 将整个数组以 byte 块的形式存入 NVS
+    prefs.putBytes(keyR, rawArray, rawLen * sizeof(uint16_t));
+    prefs.putInt(keyRL, rawLen);
+    // 清除可能残留的标准协议数据
+    prefs.remove(keyH);
+    prefs.remove(keyL);
+    prefs.remove(keyB);
+  }
 }
 
 void sendCustomCommand(int grp, int act) {
-  char keyT[15], keyH[15], keyL[15], keyB[15];
+  char keyT[15], keyH[15], keyL[15], keyB[15], keyR[15], keyRL[15];
   sprintf(keyT, "t_%d_%d", grp, act);
   sprintf(keyH, "h_%d_%d", grp, act);
   sprintf(keyL, "l_%d_%d", grp, act);
   sprintf(keyB, "b_%d_%d", grp, act);
+  sprintf(keyR, "r_%d_%d", grp, act);
+  sprintf(keyRL, "rl_%d_%d", grp, act);
+
   if (!prefs.isKey(keyT)) {
     showToast("未录入!");
     return;
   }
+
   decode_type_t type = (decode_type_t)prefs.getInt(keyT);
-  uint32_t high = prefs.getUInt(keyH);
-  uint32_t low = prefs.getUInt(keyL);
-  uint64_t val = ((uint64_t)high << 32) | low;
-  uint16_t bits = prefs.getInt(keyB);
-  irsend.send(type, val, bits);
+
+  if (type != UNKNOWN) {
+    // 发送标准协议
+    uint32_t high = prefs.getUInt(keyH);
+    uint32_t low = prefs.getUInt(keyL);
+    uint64_t val = ((uint64_t)high << 32) | low;
+    uint16_t bits = prefs.getInt(keyB);
+    irsend.send(type, val, bits);
+  } else {
+    // 发送生数据 (Raw Mode)
+    int rawLen = prefs.getInt(keyRL, 0);
+    if (rawLen > 0) {
+      uint16_t rawArray[rawLen];
+      prefs.getBytes(keyR, rawArray, rawLen * sizeof(uint16_t));
+      // 大多数非标准家用遥控器调制频率为 38kHz
+      irsend.sendRaw(rawArray, rawLen, 38); 
+    }
+  }
   showToast("Custom Sent!");
 }
 
