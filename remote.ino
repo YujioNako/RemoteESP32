@@ -6,6 +6,81 @@
 #include <IRutils.h>
 #include <Preferences.h>
 #include <IRac.h>
+#include <WiFi.h>
+#include <WebServer.h>
+
+// ================= 🌐 网络与 Web Server 配置 =================
+String savedSSID = "";
+String savedPASS = "";
+
+WebServer server(80);
+
+// 这是一个极其轻量且适配手机屏幕的 HTML 网页 (内嵌 CSS 和 JS)
+const char* htmlPage = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ESP32 万能遥控中心</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; margin-top: 20px; background-color: #121212; color: white; }
+    h2 { color: #4CAF50; }
+    button { padding: 15px; margin: 8px; font-size: 18px; width: 40%; border-radius: 8px; border: none; cursor: pointer; color: white; }
+    .tv-btn { background-color: #2196F3; }
+    .ac-btn { background-color: #FF9800; }
+    .ac-btn:active, .tv-btn:active { opacity: 0.7; }
+  </style>
+  <script>
+    function sendCmd(url) {
+      // 使用 fetch 在后台静默发送请求，网页不会刷新
+      fetch(url).then(response => response.text()).then(text => console.log(text));
+    }
+  </script>
+</head>
+<body>
+  <h2>📡 ESP32 遥控中心</h2>
+  
+  <h3>📺 电视控制 (当前品牌)</h3>
+  <button class="tv-btn" onclick="sendCmd('/api/tv?cmd=power')">电源 (Power)</button>
+  <button class="tv-btn" onclick="sendCmd('/api/tv?cmd=mute')">静音 (Mute)</button>
+  <br>
+  <button class="tv-btn" onclick="sendCmd('/api/tv?cmd=vol_up')">音量 +</button>
+  <button class="tv-btn" onclick="sendCmd('/api/tv?cmd=vol_down')">音量 -</button>
+
+  <h3>❄️ 空调控制</h3>
+  <button class="ac-btn" onclick="sendCmd('/api/ac?cmd=power')">电源开关</button>
+  <button class="ac-btn" onclick="sendCmd('/api/ac?cmd=swing')">上下扫风</button>
+  <br>
+  <button class="ac-btn" onclick="sendCmd('/api/ac?cmd=temp_up')">温度 +</button>
+  <button class="ac-btn" onclick="sendCmd('/api/ac?cmd=temp_down')">温度 -</button>
+</body>
+</html>
+)rawliteral";
+
+// AP配网专用页面
+const char* configHtml = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>遥控器 WiFi 配置</title>
+  <style>
+    body { font-family: Arial; text-align: center; margin-top: 50px; background-color: #121212; color: white; }
+    input { padding: 10px; margin: 10px; width: 80%; border-radius: 5px; border: 1px solid #ccc; }
+    input[type="submit"] { background-color: #4CAF50; color: white; font-weight: bold; border: none; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h2>⚙️ 遥控器配网</h2>
+  <form action="/save_wifi" method="GET">
+    <input type="text" name="ssid" placeholder="请输入家里的 WiFi 名称" required><br>
+    <input type="text" name="pass" placeholder="请输入 WiFi 密码"><br>
+    <input type="submit" value="保存并重启设备">
+  </form>
+</body>
+</html>
+)rawliteral";
 
 #define PIN_OLED_SDA 21
 #define PIN_OLED_SCL 22
@@ -23,7 +98,7 @@ Preferences prefs;
 IRac ac(PIN_IR_TX);
 
 // ================= 状态机与菜单引擎 =================
-enum AppState { BOOT, MAIN_MENU, TV_MENU, TV_BRAND, AC_MENU, LEARN_GRP, LEARN_ACT, LEARN_WAIT, CUSTOM_GRP, CUSTOM_ACT, SETTINGS_MENU, GRP_MANAGE, RENAME_SEL, RENAME_EDIT, GRP_INSERT_SEL, GRP_DELETE_SEL, SIGNAL_ANALYSIS };
+enum AppState { BOOT, MAIN_MENU, TV_MENU, TV_BRAND, AC_MENU, LEARN_GRP, LEARN_ACT, LEARN_WAIT, CUSTOM_GRP, CUSTOM_ACT, SETTINGS_MENU, GRP_MANAGE, RENAME_SEL, RENAME_EDIT, GRP_INSERT_SEL, GRP_DELETE_SEL, SIGNAL_ANALYSIS, WIFI_CONFIG_AP };
 AppState currentState = BOOT;
 
 int cursorIndex = 0;
@@ -210,6 +285,63 @@ void initGroupNames() {
   for (int i = 0; i < customGroupCount; i++) buildGroupName(i);
 }
 
+// ================= 🌐 Web 路由处理引擎 =================
+void setupWebHandlers() {
+  // 1. 访问主页时，下发 HTML 界面
+  server.on("/", HTTP_GET, []() {
+    server.send(200, "text/html", htmlPage);
+  });
+
+  // 2. 电视控制 API
+  server.on("/api/tv", HTTP_GET, []() {
+    if (server.hasArg("cmd")) {
+      String cmd = server.arg("cmd");
+      if (cmd == "power") sendTVCommand(currentTVBrand, 1);     // 索引 1 通常是电源
+      else if (cmd == "vol_up") sendTVCommand(currentTVBrand, 2); // 索引 2 是音量+
+      else if (cmd == "vol_down") sendTVCommand(currentTVBrand, 3);
+      else if (cmd == "mute") sendTVCommand(currentTVBrand, 6);
+    }
+    server.send(200, "text/plain", "TV OK");
+  });
+
+  // 3. 空调控制 API (联动屏幕与全局变量)
+  server.on("/api/ac", HTTP_GET, []() {
+    if (server.hasArg("cmd")) {
+      String cmd = server.arg("cmd");
+      if (cmd == "power") acPower = !acPower;
+      else if (cmd == "temp_up" && acTemp < 30) acTemp++;
+      else if (cmd == "temp_down" && acTemp > 16) acTemp--;
+      else if (cmd == "swing") acSwingV = !acSwingV;
+      
+      // 发送红外信号
+      sendACCommand(); 
+      needsRedraw = true; 
+      
+      // 👉 顺手把核心状态存入 NVS，实现网络修改也能断电记忆
+      prefs.putBool("acPower", acPower);
+      prefs.putInt("acTemp", acTemp);
+      prefs.putBool("acSwingV", acSwingV);
+    }
+    server.send(200, "text/plain", "AC OK");
+  });
+
+  // === 新增：配网页面与保存接口 ===
+  server.on("/wifi", HTTP_GET, []() {
+    server.send(200, "text/html", configHtml);
+  });
+
+  server.on("/save_wifi", HTTP_GET, []() {
+    String newSSID = server.arg("ssid");
+    String newPASS = server.arg("pass");
+    prefs.putString("ssid", newSSID);
+    prefs.putString("pass", newPASS);
+    
+    server.send(200, "text/html", "<h2 style='color:green;text-align:center;margin-top:50px;'>配置已保存！<br>遥控器正在重启...</h2>");
+    delay(1500);
+    ESP.restart(); // 收到密码后直接硬重启
+  });
+}
+
 // ================= 生命周期 =================
 void setup() {
   Serial.begin(115200);
@@ -245,6 +377,49 @@ void setup() {
   u8g2.setContrast(sysBrightness);
   u8g2.setBusClock(400000);
 
+  // 替换 setup() 中原来的 WiFi.begin(ssid, password) 相关代码段：
+  
+  savedSSID = prefs.getString("ssid", "");
+  savedPASS = prefs.getString("pass", "");
+
+  if (savedSSID.length() > 0) {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(savedSSID.c_str(), savedPASS.c_str());
+    
+    u8g2.clearBuffer();
+    u8g2.setCursor(15, 30);
+    u8g2.print("连接: " + savedSSID);
+    u8g2.sendBuffer();
+
+    int timeout = 0;
+    while (WiFi.status() != WL_CONNECTED && timeout < 10) { // 5秒超时限制
+      delay(500);
+      timeout++;
+    }
+
+    u8g2.clearBuffer();
+    if (WiFi.status() == WL_CONNECTED) {
+      u8g2.setCursor(5, 20);
+      u8g2.print("Wi-Fi 已连接!");
+      u8g2.setCursor(5, 40);
+      u8g2.print("IP: " + WiFi.localIP().toString());
+      setupWebHandlers();
+      server.begin();
+    } else {
+      u8g2.setCursor(15, 30);
+      u8g2.print("连接超时 (单机模式)");
+    }
+    u8g2.sendBuffer();
+    delay(1500);
+  } else {
+    // 首次开机或未配置过 WiFi
+    u8g2.clearBuffer();
+    u8g2.setCursor(10, 30);
+    u8g2.print("无 WiFi 记录 (单机模式)");
+    u8g2.sendBuffer();
+    delay(1000);
+  }
+
   irsend.begin();
   irrecv.enableIRIn();
   runBootSequence();
@@ -252,6 +427,11 @@ void setup() {
 }
 
 void loop() {
+  // 修改 loop() 开头的 Web 请求监听逻辑
+  if (WiFi.status() == WL_CONNECTED || currentState == WIFI_CONFIG_AP) {
+    server.handleClient();
+  }
+
   readEncoder();
 
   // 学习捕获
@@ -457,7 +637,7 @@ void handleShortPress() {
       else if (cursorIndex == 1) changeMenu(AC_MENU, 13);
       else if (cursorIndex == 2) changeMenu(LEARN_GRP, customGroupCount);
       else if (cursorIndex == 3) changeMenu(CUSTOM_GRP, customGroupCount);
-      else if (cursorIndex == 4) changeMenu(SETTINGS_MENU, 6);
+      else if (cursorIndex == 4) changeMenu(SETTINGS_MENU, 7);
       break;
 
     case TV_MENU:
@@ -494,6 +674,15 @@ void handleShortPress() {
     case SETTINGS_MENU:
       if (cursorIndex == 0) isEditing = true;
       else if (cursorIndex == 1) {
+        // === 新增：开启 AP 热点并进入配网状态 ===
+        WiFi.disconnect();
+        WiFi.mode(WIFI_AP);
+        WiFi.softAP("ESP32_Remote"); 
+        setupWebHandlers();
+        server.begin();
+        changeMenu(WIFI_CONFIG_AP, 1);
+      }
+      else if (cursorIndex == 2) {
         analyzedProtocol = "等待接收...";
         analyzedValue = "---";
         analyzedDesc = "---";
@@ -501,11 +690,13 @@ void handleShortPress() {
         scrollX_desc = 0;
         changeMenu(SIGNAL_ANALYSIS, 1);
         while (irrecv.decode(&results)) { irrecv.resume(); }  
-      } else if (cursorIndex == 2) changeMenu(GRP_MANAGE, 3);
-      else if (cursorIndex == 3) {
+      } 
+      else if (cursorIndex == 3) changeMenu(GRP_MANAGE, 3); // 原来这里写成了 2，现修正为 3
+      else if (cursorIndex == 4) {                          // 原来这里是 3，现修正为 4
         runBootSequence();
         changeMenu(MAIN_MENU, 5);
-      } else if (cursorIndex == 4) {
+      } 
+      else if (cursorIndex == 5) {                          // 原来这里是 4，现修正为 5
         prefs.clear();
         prefs.putInt("brightness", sysBrightness);
         prefs.putInt("tvBrand", currentTVBrand);
@@ -513,7 +704,8 @@ void handleShortPress() {
         prefs.putInt("grpCount", customGroupCount);
         initGroupNames();
         showToast("系统已重置!");
-      } else if (cursorIndex == 5) showToast("Ver 12.0 | Ultimate");
+      } 
+      else if (cursorIndex == 6) showToast("Ver 12.0 | Ultimate"); // 原来这里是 5，现修正为 6
       break;
 
     case GRP_MANAGE:
@@ -617,6 +809,9 @@ void handleLongPress() {
     prevState = RENAME_SEL;
     prevItemCount = customGroupCount;
     prevCursor = renameTargetGrp;
+  } else if (currentState == WIFI_CONFIG_AP) {
+    // 退出配网时重启设备以恢复常规模式
+    ESP.restart(); 
   }
 
   changeMenu(prevState, prevItemCount);
@@ -849,12 +1044,26 @@ void updateDisplay() {
 
     case SETTINGS_MENU:
       {
-        String dynSet[6] = { "亮度: " + String(sysBrightness), "📡 红外信号分析", "自定义组管理", "重新自检", "清空系统数据", "关于本机" };
-        const char* setPtrs[6];
-        for (int i = 0; i < 6; i++) setPtrs[i] = dynSet[i].c_str();
+        String dynSet[7] = { "亮度: " + String(sysBrightness), "配置 WiFi 网络", "红外信号分析", "自定义组管理", "重新自检", "清空系统数据", "关于本机" };
+        const char* setPtrs[7];
+        for (int i = 0; i < 7; i++) setPtrs[i] = dynSet[i].c_str();
         drawScrollMenu("系统设置", setPtrs);
         break;
       }
+    
+    case WIFI_CONFIG_AP:
+      u8g2.drawFrame(0, 0, 128, 64);
+      u8g2.setCursor(5, 15);
+      u8g2.print("📡 配网热点已开启");
+      u8g2.drawLine(0, 18, 128, 18);
+      u8g2.setCursor(5, 32);
+      u8g2.print("名称: ESP32_Remote");
+      u8g2.setCursor(5, 45);
+      u8g2.print("密码: (无密码)");
+      u8g2.setCursor(5, 58);
+      u8g2.print("访问: 192.168.4.1/wifi");
+      break;
+
     default:
       u8g2.setCursor(10, 30);
       u8g2.print("模块开发中...");
