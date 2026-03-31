@@ -80,7 +80,8 @@ const char* acModeNames[] = { "Cool(冷)", "Heat(热)", "Fan(风)", "Dry(湿)", 
 int acTemp = 26;
 int acFan = 0;
 const char* acFanNames[] = { "Auto", "Low", "Mid", "High" };
-bool acSwing = false;
+bool acSwingV = false;
+bool acSwingH = false;
 bool acSleep = false;
 bool acTurbo = false;
 bool acLight = true;
@@ -229,7 +230,8 @@ void setup() {
   acMode = prefs.getInt("acMode", 0);
   acTemp = prefs.getInt("acTemp", 26);
   acFan = prefs.getInt("acFan", 0);
-  acSwing = prefs.getBool("acSwing", false);
+  acSwingV = prefs.getBool("acSwingV", false);
+  acSwingH = prefs.getBool("acSwingH", false);
   acSleep = prefs.getBool("acSleep", false);
   acTurbo = prefs.getBool("acTurbo", false);
   acLight = prefs.getBool("acLight", true);
@@ -284,7 +286,14 @@ void loop() {
           analyzedDesc = analyzedDesc.substring(0, analyzedDesc.length() - 3);
         }
       } else {
-        analyzedDesc = "基本指令位宽: " + String(results.bits) + " Bits";
+        // 优雅降级显示
+        if (results.decode_type == UNKNOWN) {
+          // 针对未知协议，显示原始脉冲数
+          analyzedDesc = "未知协议 | 脉冲数量: " + String(results.rawlen) + " | 基本指令位宽: " + String(results.bits) + " Bits";
+        } else {
+          // 标准红外按键，显示位宽
+          analyzedDesc = "基本指令位宽: " + String(results.bits) + " Bits";
+        }
       }
 
       scrollX_val = 0;
@@ -344,16 +353,18 @@ void readEncoder() {
           if (acFan > 3) acFan = 0;
           if (acFan < 0) acFan = 3;
         } else if (cursorIndex == 5) {
-          acSwing = !acSwing;
+          acSwingV = !acSwingV;  // 上下扫风
         } else if (cursorIndex == 6) {
-          acSleep = !acSleep;
+          acSwingH = !acSwingH;  // 左右扫风
         } else if (cursorIndex == 7) {
-          acTurbo = !acTurbo;
+          acSleep = !acSleep;    // 后续序号依次 +1
         } else if (cursorIndex == 8) {
-          acLight = !acLight;
+          acTurbo = !acTurbo;
         } else if (cursorIndex == 9) {
-          acBeep = !acBeep;
+          acLight = !acLight;
         } else if (cursorIndex == 10) {
+          acBeep = !acBeep;
+        } else if (cursorIndex == 11) {
           acQuiet = !acQuiet;
         }
       } else if (currentState == RENAME_EDIT) {
@@ -404,21 +415,22 @@ void handleShortPress() {
     if (currentState == SETTINGS_MENU && cursorIndex == 0) {
       prefs.putInt("brightness", sysBrightness);
     }
-    if (currentState == AC_MENU && cursorIndex < 11) {
+    if (currentState == AC_MENU && cursorIndex < 12) {  // 改为 < 12
       // 退出编辑时，保存当前所有空调参数到 NVS，实现断电保存
       prefs.putInt("acBrand", acBrandIndex);
       prefs.putBool("acPower", acPower);
       prefs.putInt("acMode", acMode);
       prefs.putInt("acTemp", acTemp);
       prefs.putInt("acFan", acFan);
-      prefs.putBool("acSwing", acSwing);
+      prefs.putBool("acSwingV", acSwingV);  // 保存上下扫风
+      prefs.putBool("acSwingH", acSwingH);  // 保存左右扫风
       prefs.putBool("acSleep", acSleep);
       prefs.putBool("acTurbo", acTurbo);
       prefs.putBool("acLight", acLight);
       prefs.putBool("acBeep", acBeep);
       prefs.putBool("acQuiet", acQuiet);
 
-      if (cursorIndex == 0) { // 如果修改了品牌，发送一条测试指令(自动忽略电源，只测协议)
+      if (cursorIndex == 0) { // 测试指令逻辑不变
         bool tempPower = acPower;
         acPower = false;
         sendACCommand();
@@ -442,7 +454,7 @@ void handleShortPress() {
   switch (currentState) {
     case MAIN_MENU:
       if (cursorIndex == 0) changeMenu(TV_MENU, TV_ACTION_COUNT + 1);
-      else if (cursorIndex == 1) changeMenu(AC_MENU, 12); // 空调菜单更新为12项
+      else if (cursorIndex == 1) changeMenu(AC_MENU, 13);
       else if (cursorIndex == 2) changeMenu(LEARN_GRP, customGroupCount);
       else if (cursorIndex == 3) changeMenu(CUSTOM_GRP, customGroupCount);
       else if (cursorIndex == 4) changeMenu(SETTINGS_MENU, 6);
@@ -459,8 +471,8 @@ void handleShortPress() {
       changeMenu(TV_MENU, TV_ACTION_COUNT + 1);
       break;
     case AC_MENU:
-      if (cursorIndex < 11) isEditing = true;
-      else if (cursorIndex == 11) sendACCommand(); // 第12项是发送按键
+      if (cursorIndex < 12) isEditing = true;          // 前12项是参数编辑
+      else if (cursorIndex == 12) sendACCommand();     // 第13项是发送按键
       break;
 
     case LEARN_GRP:
@@ -640,7 +652,8 @@ void sendACCommand() {
   else if (acFan == 2) ac.next.fanspeed = stdAc::fanspeed_t::kMedium;
   else ac.next.fanspeed = stdAc::fanspeed_t::kHigh;
   
-  ac.next.swingv = acSwing ? stdAc::swingv_t::kAuto : stdAc::swingv_t::kOff;
+  ac.next.swingv = acSwingV ? stdAc::swingv_t::kAuto : stdAc::swingv_t::kOff;
+  ac.next.swingh = acSwingH ? stdAc::swingh_t::kAuto : stdAc::swingh_t::kOff;
   
   // 注入新拓展的高级控制参数
   ac.next.sleep = acSleep;
@@ -912,14 +925,15 @@ void drawACDashboard() {
   u8g2.print("❄️ 空调超级引擎");
   u8g2.drawLine(0, 15, 128, 15);
   
-  // 扩展为 12 个项
-  String acItems[12] = { 
+  // 扩展为 13 个项
+  String acItems[13] = { 
     "协议: " + typeToString(acProtocols[acBrandIndex]), 
     "电源: " + String(acPower ? "ON" : "OFF"), 
     "模式: " + String(acModeNames[acMode]), 
     "温度: " + String(acTemp) + " C", 
     "风速: " + String(acFanNames[acFan]), 
-    "扫风: " + String(acSwing ? "打开" : "关闭"), 
+    "上下扫风: " + String(acSwingV ? "打开" : "关闭"), 
+    "左右扫风: " + String(acSwingH ? "打开" : "关闭"), 
     "睡眠: " + String(acSleep ? "打开" : "关闭"),
     "强劲(Turbo): " + String(acTurbo ? "打开" : "关闭"),
     "灯光: " + String(acLight ? "打开" : "关闭"),
@@ -930,7 +944,7 @@ void drawACDashboard() {
 
   for (int i = 0; i < 3; i++) {
     int itemIdx = scrollOffset + i;
-    if (itemIdx >= 12) break; // 保护边界
+    if (itemIdx >= 13) break; // 保护边界改为 13
     int yPos = 28 + (i * 14);
     if (itemIdx == cursorIndex) {
       if (isEditing) u8g2.drawFrame(0, yPos - 11, 128, 14);
@@ -948,10 +962,10 @@ void drawACDashboard() {
     }
   }
   
-  // 滚动条比例适配 12个项目
-  int scrollBarHeight = 48 / 12; 
+  // 滚动条比例适配 13个项目
+  int scrollBarHeight = 48 / 13; 
   if (scrollBarHeight < 4) scrollBarHeight = 4;
-  u8g2.drawBox(126, 16 + (48 - scrollBarHeight) * cursorIndex / 11, 2, scrollBarHeight);
+  u8g2.drawBox(126, 16 + (48 - scrollBarHeight) * cursorIndex / 12, 2, scrollBarHeight);
 }
 
 void showToast(const char* msg) {
