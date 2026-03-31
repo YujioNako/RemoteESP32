@@ -23,23 +23,7 @@ Preferences prefs;
 IRac ac(PIN_IR_TX);
 
 // ================= 状态机与菜单引擎 =================
-enum AppState { BOOT,
-                MAIN_MENU,
-                TV_MENU,
-                TV_BRAND,
-                AC_MENU,
-                LEARN_GRP,
-                LEARN_ACT,
-                LEARN_WAIT,
-                CUSTOM_GRP,
-                CUSTOM_ACT,
-                SETTINGS_MENU,
-                GRP_MANAGE,
-                RENAME_SEL,
-                RENAME_EDIT,
-                GRP_INSERT_SEL,
-                GRP_DELETE_SEL,
-                SIGNAL_ANALYSIS };
+enum AppState { BOOT, MAIN_MENU, TV_MENU, TV_BRAND, AC_MENU, LEARN_GRP, LEARN_ACT, LEARN_WAIT, CUSTOM_GRP, CUSTOM_ACT, SETTINGS_MENU, GRP_MANAGE, RENAME_SEL, RENAME_EDIT, GRP_INSERT_SEL, GRP_DELETE_SEL, SIGNAL_ANALYSIS };
 AppState currentState = BOOT;
 
 int cursorIndex = 0;
@@ -49,12 +33,12 @@ bool needsRedraw = true;
 bool isEditing = false;
 int sysBrightness = 128;
 
-// ================= 📡 分析仪专属变量 (跑马灯引擎) =================
+// ================= 📡 分析仪专属变量 =================
 String analyzedProtocol = "等待信号...";
 String analyzedValue = "---";
 String analyzedDesc = "---";
-int scrollX_val = 0;   // 键值的滚动坐标
-int scrollX_desc = 0;  // 解析的滚动坐标
+int scrollX_val = 0;   
+int scrollX_desc = 0;  
 unsigned long lastAnimTime = 0;
 
 // ================= 📺 电视字典 =================
@@ -88,13 +72,20 @@ const TVDict tvDatabase[TV_BRAND_COUNT] = {
 int acBrandIndex = 0;
 const decode_type_t acProtocols[] = { AIRTON, AIRWELL, AIWA_RC_T501, AMCOR, ARGO, ARRIS, BLUESTARHEAVY, BOSCH144, BOSE, CARRIER_AC, CARRIER_AC40, CARRIER_AC64, CARRIER_AC84, CARRIER_AC128, CLIMABUTLER, COOLIX, COOLIX48, CORONA_AC, DAIKIN, DAIKIN2, DAIKIN64, DAIKIN128, DAIKIN152, DAIKIN160, DAIKIN176, DAIKIN200, DAIKIN216, DAIKIN312, DELONGHI_AC, DENON, DISH, DOSHISHA, ECOCLIM, ELECTRA_AC, ELITESCREENS, EPSON, EUROM, FUJITSU_AC, GICABLE, GOODWEATHER, GORENJE, GREE, HAIER_AC, HAIER_AC160, HAIER_AC176, HAIER_AC_YRW02, HITACHI_AC, HITACHI_AC1, HITACHI_AC2, HITACHI_AC3, HITACHI_AC424, HITACHI_AC264, HITACHI_AC296, HITACHI_AC344, INAX, JVC, KELON, KELON168, KELVINATOR, LASERTAG, LEGOPF, LG, LG2, LUTRON, MAGIQUEST, METZ, MIDEA, MIDEA24, MILESTAG2, MIRAGE, MITSUBISHI, MITSUBISHI2, MITSUBISHI112, MITSUBISHI136, MITSUBISHI_AC, MITSUBISHI_HEAVY_88, MITSUBISHI_HEAVY_152, MULTIBRACKETS, MWM, NEC, NEC_LIKE, NEOCLIMA, NIKAI, PANASONIC, PANASONIC_AC, PANASONIC_AC32, PIONEER, RC5, RC5X, RC6, RCMM, RHOSS, SAMSUNG, SAMSUNG36, SAMSUNG_AC, SANYO, SANYO_AC, SANYO_AC88, SANYO_AC152, SANYO_LC7461, SHARP, SHARP_AC, SHERWOOD, SONY, SONY_38K, SYMPHONY, TCL96AC, TCL112AC, TECHNIBEL_AC, TECO, TEKNOPOINT, TOSHIBA_AC, TOTO, TRANSCOLD, TROTEC, TROTEC_3550, TRUMA, VESTEL_AC, VOLTAS, WHIRLPOOL_AC, WHYNTER, WOWWEE, XMP, YORK, ZEPEAL, kLastDecodeType };
 const int AC_BRAND_COUNT = sizeof(acProtocols) / sizeof(acProtocols[0]);
-int acTemp = 26;
+
+// 空调控制参数
 bool acPower = false;
 int acMode = 0;
 const char* acModeNames[] = { "Cool(冷)", "Heat(热)", "Fan(风)", "Dry(湿)", "Auto(自)" };
+int acTemp = 26;
 int acFan = 0;
 const char* acFanNames[] = { "Auto", "Low", "Mid", "High" };
 bool acSwing = false;
+bool acSleep = false;
+bool acTurbo = false;
+bool acLight = true;
+bool acBeep = true;
+bool acQuiet = false;
 
 // ================= 🛠️ 动态增删与词典引擎 =================
 const int MAX_CUSTOM_GROUPS = 10;
@@ -211,18 +202,31 @@ void setup() {
   pinMode(PIN_ENC_DT, INPUT_PULLUP);
   pinMode(PIN_ENC_SW, INPUT_PULLUP);
   prefs.begin("remoteData", false);
+  
   sysBrightness = prefs.getInt("brightness", 128);
   currentTVBrand = prefs.getInt("tvBrand", 0);
-  acBrandIndex = prefs.getInt("acBrand", 0);
   customGroupCount = prefs.getInt("grpCount", 4);
   if (customGroupCount > MAX_CUSTOM_GROUPS) customGroupCount = MAX_CUSTOM_GROUPS;
   if (customGroupCount < 1) customGroupCount = 1;
+
+  // 读取所有空调数据，确保断电保存
+  acBrandIndex = prefs.getInt("acBrand", 0);
+  acPower = prefs.getBool("acPower", false);
+  acMode = prefs.getInt("acMode", 0);
+  acTemp = prefs.getInt("acTemp", 26);
+  acFan = prefs.getInt("acFan", 0);
+  acSwing = prefs.getBool("acSwing", false);
+  acSleep = prefs.getBool("acSleep", false);
+  acTurbo = prefs.getBool("acTurbo", false);
+  acLight = prefs.getBool("acLight", true);
+  acBeep = prefs.getBool("acBeep", true);
+  acQuiet = prefs.getBool("acQuiet", false);
+
   initGroupNames();
 
   u8g2.begin();
   u8g2.enableUTF8Print();
   u8g2.setContrast(sysBrightness);
-  // 【重要】提升 I2C 速率到 400kHz，让跑马灯动画纵享丝滑！
   u8g2.setBusClock(400000);
 
   irsend.begin();
@@ -234,7 +238,6 @@ void setup() {
 void loop() {
   readEncoder();
 
-  // 学习捕获
   if (currentState == LEARN_WAIT) {
     if (irrecv.decode(&results)) {
       if (results.decode_type == UNKNOWN || results.bits < 8) {
@@ -248,25 +251,19 @@ void loop() {
     }
   }
 
-  // 【新增】神级红外抓包与空调解析引擎
   if (currentState == SIGNAL_ANALYSIS) {
     if (irrecv.decode(&results)) {
       analyzedProtocol = typeToString(results.decode_type);
       analyzedValue = resultToHexidecimal(&results);
-
-      // 1. 【核心大换血】调用空调专属的深度解析函数！
       analyzedDesc = IRAcUtils::resultAcToString(&results);
 
-      // 2. 判断是否成功解析出空调状态
       if (analyzedDesc.length() > 2) {
-        // 如果是空调，开启“降维碾压”，把换行符全部替换为分割线
         analyzedDesc.replace("\n", " | ");
         analyzedDesc.replace("\r", "");
         if (analyzedDesc.endsWith(" | ")) {
           analyzedDesc = analyzedDesc.substring(0, analyzedDesc.length() - 3);
         }
       } else {
-        // 如果不是空调（比如普通的电视按键），解析不出长串状态，就优雅地降级显示位宽
         analyzedDesc = "基本指令位宽: " + String(results.bits) + " Bits";
       }
 
@@ -276,7 +273,6 @@ void loop() {
       needsRedraw = true;
     }
 
-    // 跑马灯动画引擎定时器
     if (millis() - lastAnimTime > 40) {
       lastAnimTime = millis();
       needsRedraw = true;
@@ -329,6 +325,16 @@ void readEncoder() {
           if (acFan < 0) acFan = 3;
         } else if (cursorIndex == 5) {
           acSwing = !acSwing;
+        } else if (cursorIndex == 6) {
+          acSleep = !acSleep;
+        } else if (cursorIndex == 7) {
+          acTurbo = !acTurbo;
+        } else if (cursorIndex == 8) {
+          acLight = !acLight;
+        } else if (cursorIndex == 9) {
+          acBeep = !acBeep;
+        } else if (cursorIndex == 10) {
+          acQuiet = !acQuiet;
         }
       } else if (currentState == RENAME_EDIT) {
         if (cursorIndex == 0) {
@@ -375,14 +381,30 @@ void readEncoder() {
 void handleShortPress() {
   if (isEditing) {
     isEditing = false;
-    if (currentState == SETTINGS_MENU && cursorIndex == 0) prefs.putInt("brightness", sysBrightness);
-    if (currentState == AC_MENU && cursorIndex == 0) {
+    if (currentState == SETTINGS_MENU && cursorIndex == 0) {
+      prefs.putInt("brightness", sysBrightness);
+    }
+    if (currentState == AC_MENU && cursorIndex < 11) {
+      // 退出编辑时，保存当前所有空调参数到 NVS，实现断电保存
       prefs.putInt("acBrand", acBrandIndex);
-      bool tempPower = acPower;
-      acPower = false;
-      sendACCommand();
-      acPower = tempPower;
-      showToast("Test Sent!");
+      prefs.putBool("acPower", acPower);
+      prefs.putInt("acMode", acMode);
+      prefs.putInt("acTemp", acTemp);
+      prefs.putInt("acFan", acFan);
+      prefs.putBool("acSwing", acSwing);
+      prefs.putBool("acSleep", acSleep);
+      prefs.putBool("acTurbo", acTurbo);
+      prefs.putBool("acLight", acLight);
+      prefs.putBool("acBeep", acBeep);
+      prefs.putBool("acQuiet", acQuiet);
+
+      if (cursorIndex == 0) { // 如果修改了品牌，发送一条测试指令(自动忽略电源，只测协议)
+        bool tempPower = acPower;
+        acPower = false;
+        sendACCommand();
+        acPower = tempPower;
+        showToast("Test Sent!");
+      }
     }
     needsRedraw = true;
     return;
@@ -395,12 +417,12 @@ void handleShortPress() {
   if (currentState == SIGNAL_ANALYSIS) {
     changeMenu(SETTINGS_MENU, 6);
     return;
-  }  // 退回设置菜单
+  }
 
   switch (currentState) {
     case MAIN_MENU:
       if (cursorIndex == 0) changeMenu(TV_MENU, TV_ACTION_COUNT + 1);
-      else if (cursorIndex == 1) changeMenu(AC_MENU, 7);
+      else if (cursorIndex == 1) changeMenu(AC_MENU, 12); // 空调菜单更新为12项
       else if (cursorIndex == 2) changeMenu(LEARN_GRP, customGroupCount);
       else if (cursorIndex == 3) changeMenu(CUSTOM_GRP, customGroupCount);
       else if (cursorIndex == 4) changeMenu(SETTINGS_MENU, 6);
@@ -417,8 +439,8 @@ void handleShortPress() {
       changeMenu(TV_MENU, TV_ACTION_COUNT + 1);
       break;
     case AC_MENU:
-      if (cursorIndex < 6) isEditing = true;
-      else if (cursorIndex == 6) sendACCommand();
+      if (cursorIndex < 11) isEditing = true;
+      else if (cursorIndex == 11) sendACCommand(); // 第12项是发送按键
       break;
 
     case LEARN_GRP:
@@ -446,7 +468,7 @@ void handleShortPress() {
         scrollX_val = 0;
         scrollX_desc = 0;
         changeMenu(SIGNAL_ANALYSIS, 1);
-        while (irrecv.decode(&results)) { irrecv.resume(); }  // 清空缓存
+        while (irrecv.decode(&results)) { irrecv.resume(); }  
       } else if (cursorIndex == 2) changeMenu(GRP_MANAGE, 3);
       else if (cursorIndex == 3) {
         runBootSequence();
@@ -583,6 +605,7 @@ void sendTVCommand(int brandIdx, int actionIdx) {
   irsend.send(tvDatabase[brandIdx].protocol, code, tvDatabase[brandIdx].bits);
   showToast("TV Sent!");
 }
+
 void sendACCommand() {
   ac.next.protocol = acProtocols[acBrandIndex];
   ac.next.power = acPower;
@@ -596,9 +619,19 @@ void sendACCommand() {
   else if (acFan == 1) ac.next.fanspeed = stdAc::fanspeed_t::kLow;
   else if (acFan == 2) ac.next.fanspeed = stdAc::fanspeed_t::kMedium;
   else ac.next.fanspeed = stdAc::fanspeed_t::kHigh;
+  
   ac.next.swingv = acSwing ? stdAc::swingv_t::kAuto : stdAc::swingv_t::kOff;
+  
+  // 注入新拓展的高级控制参数
+  ac.next.sleep = acSleep;
+  ac.next.turbo = acTurbo;
+  ac.next.light = acLight;
+  ac.next.beep = acBeep;
+  ac.next.quiet = acQuiet;
+
   ac.sendAc();
 }
+
 void saveIRCode(int grp, int act, decode_results* res) {
   char keyT[15], keyH[15], keyL[15], keyB[15];
   sprintf(keyT, "t_%d_%d", grp, act);
@@ -610,6 +643,7 @@ void saveIRCode(int grp, int act, decode_results* res) {
   prefs.putUInt(keyL, (uint32_t)(res->value & 0xFFFFFFFF));
   prefs.putInt(keyB, res->bits);
 }
+
 void sendCustomCommand(int grp, int act) {
   char keyT[15], keyH[15], keyL[15], keyB[15];
   sprintf(keyT, "t_%d_%d", grp, act);
@@ -696,7 +730,6 @@ void updateDisplay() {
       u8g2.print("[短按取消]");
       break;
 
-    // 【新增】红外分析仪 UI 与裁剪滚动逻辑
     case SIGNAL_ANALYSIS:
       {
         u8g2.drawFrame(0, 0, 128, 64);
@@ -706,11 +739,9 @@ void updateDisplay() {
         u8g2.setCursor(5, 28);
         u8g2.print("协议: " + analyzedProtocol);
 
-        // 计算文本的像素宽度
         int valW = u8g2.getUTF8Width(analyzedValue.c_str());
         int descW = u8g2.getUTF8Width(analyzedDesc.c_str());
 
-        // 键值滚动逻辑 (超过 90 像素才滚)
         if (valW > 90) {
           scrollX_val -= 2;
           if (scrollX_val < -(valW + 10)) scrollX_val = 90;
@@ -718,7 +749,6 @@ void updateDisplay() {
           scrollX_val = 0;
         }
 
-        // 解析信息滚动逻辑
         if (descW > 90) {
           scrollX_desc -= 2;
           if (scrollX_desc < -(descW + 10)) scrollX_desc = 90;
@@ -726,15 +756,13 @@ void updateDisplay() {
           scrollX_desc = 0;
         }
 
-        // 绘制带 Clip Window 的长键值 (保护左侧“键值:”不被覆盖)
         u8g2.setCursor(5, 43);
         u8g2.print("键值: ");
-        u8g2.setClipWindow(35, 30, 126, 45);  // 划定限制绘画的隐形矩形窗
+        u8g2.setClipWindow(35, 30, 126, 45); 
         u8g2.setCursor(35 + scrollX_val, 43);
         u8g2.print(analyzedValue);
-        u8g2.setMaxClipWindow();  // 取消限制
+        u8g2.setMaxClipWindow(); 
 
-        // 绘制带 Clip Window 的状态解析
         u8g2.setCursor(5, 58);
         u8g2.print("解析: ");
         u8g2.setClipWindow(35, 46, 126, 60);
@@ -790,6 +818,7 @@ void drawScrollMenu(const char* title, const char** items) {
   int scrollBarY = 16 + (48 - scrollBarHeight) * cursorIndex / (currentMenuSize - 1 > 0 ? currentMenuSize - 1 : 1);
   u8g2.drawBox(126, scrollBarY, 2, scrollBarHeight);
 }
+
 void drawRenameEdit() {
   u8g2.setCursor(0, 12);
   u8g2.print("📝 组名编辑");
@@ -816,14 +845,31 @@ void drawRenameEdit() {
   }
   u8g2.drawBox(126, 16 + (48 - 12) * cursorIndex / 3, 2, 12);
 }
+
 void drawACDashboard() {
   u8g2.setCursor(0, 12);
   u8g2.print("❄️ 空调超级引擎");
   u8g2.drawLine(0, 15, 128, 15);
-  String acItems[7] = { "协议: " + typeToString(acProtocols[acBrandIndex]), "电源: " + String(acPower ? "ON" : "OFF"), "模式: " + String(acModeNames[acMode]), "温度: " + String(acTemp) + " C", "风速: " + String(acFanNames[acFan]), "扫风: " + String(acSwing ? "打开" : "关闭"), "[ 发送状态指令 >>> ]" };
+  
+  // 扩展为 12 个项
+  String acItems[12] = { 
+    "协议: " + typeToString(acProtocols[acBrandIndex]), 
+    "电源: " + String(acPower ? "ON" : "OFF"), 
+    "模式: " + String(acModeNames[acMode]), 
+    "温度: " + String(acTemp) + " C", 
+    "风速: " + String(acFanNames[acFan]), 
+    "扫风: " + String(acSwing ? "打开" : "关闭"), 
+    "睡眠: " + String(acSleep ? "打开" : "关闭"),
+    "强劲(Turbo): " + String(acTurbo ? "打开" : "关闭"),
+    "灯光: " + String(acLight ? "打开" : "关闭"),
+    "蜂鸣器: " + String(acBeep ? "打开" : "关闭"),
+    "静音: " + String(acQuiet ? "打开" : "关闭"),
+    "[ 发送状态指令 >>> ]" 
+  };
+
   for (int i = 0; i < 3; i++) {
     int itemIdx = scrollOffset + i;
-    if (itemIdx >= 7) break;
+    if (itemIdx >= 12) break; // 保护边界
     int yPos = 28 + (i * 14);
     if (itemIdx == cursorIndex) {
       if (isEditing) u8g2.drawFrame(0, yPos - 11, 128, 14);
@@ -840,8 +886,13 @@ void drawACDashboard() {
       u8g2.print(acItems[itemIdx].c_str());
     }
   }
-  u8g2.drawBox(126, 16 + (48 - 6) * cursorIndex / 6, 2, 6);
+  
+  // 滚动条比例适配 12个项目
+  int scrollBarHeight = 48 / 12; 
+  if (scrollBarHeight < 4) scrollBarHeight = 4;
+  u8g2.drawBox(126, 16 + (48 - scrollBarHeight) * cursorIndex / 11, 2, scrollBarHeight);
 }
+
 void showToast(const char* msg) {
   u8g2.clearBuffer();
   u8g2.drawRBox(10, 20, 108, 24, 4);
