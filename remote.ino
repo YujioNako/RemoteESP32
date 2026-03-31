@@ -238,13 +238,19 @@ void setup() {
 void loop() {
   readEncoder();
 
+  // 学习捕获
   if (currentState == LEARN_WAIT) {
     if (irrecv.decode(&results)) {
-      if (results.decode_type == UNKNOWN || results.bits < 8) {
+      // 核心修改：如果是 UNKNOWN，只要脉冲长度大于 20，我们就认为是有效的非标准协议信号
+      if ((results.decode_type == UNKNOWN && results.rawlen < 20) || (results.decode_type != UNKNOWN && results.bits < 8)) {
         showToast("Error! 信号太弱");
       } else {
         saveIRCode(targetGroup, targetAction, &results);
-        showToast("Saved OK!");
+        if (results.decode_type == UNKNOWN) {
+          showToast("RAW Saved!"); // 提示保存了生数据
+        } else {
+          showToast("Saved OK!");
+        }
         changeMenu(LEARN_ACT, CUSTOM_ACT_COUNT);
       }
       irrecv.resume();
