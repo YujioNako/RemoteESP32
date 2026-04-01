@@ -16,31 +16,21 @@ String savedPASS = "";
 WebServer server(80);
 
 // 这是一个极其轻量且适配手机屏幕的 HTML 网页 (内嵌 CSS 和 JS)
-const char* htmlPage = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ESP32 万能遥控中心</title>
-  <style>
-    body { font-family: Arial, sans-serif; text-align: center; margin-top: 20px; background-color: #121212; color: white; }
-    h2 { color: #4CAF50; }
-    button { padding: 15px; margin: 8px; font-size: 18px; width: 40%; border-radius: 8px; border: none; cursor: pointer; color: white; }
-    .tv-btn { background-color: #2196F3; }
-    .ac-btn { background-color: #FF9800; }
-    .ac-btn:active, .tv-btn:active { opacity: 0.7; }
-  </style>
-  <script>
-    function sendCmd(url) {
-      // 使用 fetch 在后台静默发送请求，网页不会刷新
-      fetch(url).then(response => response.text()).then(text => console.log(text));
-    }
-  </script>
-</head>
-<body>
-  <h2>📡 ESP32 遥控中心</h2>
-  
+// ================= 🌐 网页前端模板 =================
+
+// 【简单版】保留你现有的样式，加入去往专业版的入口
+const char* htmlSimple = R"rawliteral(
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>简易遥控器</title>
+<style>
+  body{font-family:Arial;text-align:center;margin-top:20px;background:#121212;color:white;}
+  button{padding:15px;margin:8px;font-size:18px;width:40%;border-radius:8px;border:none;color:white;cursor:pointer;}
+  .tv-btn{background:#2196F3;} .ac-btn{background:#FF9800;}
+  .pro-link{display:block;margin-top:30px;color:#4CAF50;text-decoration:none;font-size:18px;}
+</style>
+<script>function sendCmd(u){fetch(u);}</script>
+</head><body>
+  <h2>📡 简易控制面板</h2>
   <h3>📺 电视控制 (当前品牌)</h3>
   <button class="tv-btn" onclick="sendCmd('/api/tv?cmd=power')">电源 (Power)</button>
   <button class="tv-btn" onclick="sendCmd('/api/tv?cmd=mute')">静音 (Mute)</button>
@@ -49,37 +39,158 @@ const char* htmlPage = R"rawliteral(
   <button class="tv-btn" onclick="sendCmd('/api/tv?cmd=vol_down')">音量 -</button>
 
   <h3>❄️ 空调控制</h3>
-  <button class="ac-btn" onclick="sendCmd('/api/ac?cmd=power')">电源开关</button>
-  <button class="ac-btn" onclick="sendCmd('/api/ac?cmd=swing')">上下扫风</button>
+  <button class="ac-btn" onclick="sendCmd('/api/ac?cmd=power')">电源</button>
+  <button class="ac-btn" onclick="sendCmd('/api/ac?cmd=swing')">扫风</button>
   <br>
   <button class="ac-btn" onclick="sendCmd('/api/ac?cmd=temp_up')">温度 +</button>
   <button class="ac-btn" onclick="sendCmd('/api/ac?cmd=temp_down')">温度 -</button>
-</body>
-</html>
+
+  <a href="/pro" class="pro-link">👉 进入 Pro 专业版面板</a>
+</body></html>
 )rawliteral";
 
-// AP配网专用页面
+// 【专业版】完整的 App 级 UI，包含标签页、状态显示和动态渲染
+// 【专业版】完整的 App 级 UI
+const char* htmlPro = R"rawliteral(
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Pro Remote</title>
+<style>
+  body{font-family:Arial;margin:0;padding:0;background:#1a1a1a;color:#eee;}
+  .nav{display:flex;background:#333;position:fixed;top:0;width:100%;}
+  .nav div{flex:1;text-align:center;padding:15px;cursor:pointer;font-weight:bold;}
+  .nav .active{background:#4CAF50;color:white;}
+  .page{display:none;padding:70px 15px 20px 15px;}
+  .active-page{display:block;}
+  .grid-3{display:grid;grid-template-columns:repeat(3, 1fr);gap:10px;margin-bottom:15px;}
+  .grid-2{display:grid;grid-template-columns:repeat(2, 1fr);gap:10px;margin-bottom:15px;}
+  button{background:#444;color:white;border:none;padding:15px;border-radius:8px;font-size:16px;cursor:pointer;}
+  button:active{background:#666;}
+  .btn-red{background:#E53935;} .btn-blue{background:#1E88E5;}
+  .lcd{background:#8bc34a;color:#111;padding:15px;border-radius:8px;font-family:monospace;font-size:16px;margin-bottom:15px;text-shadow: 1px 1px 2px rgba(255,255,255,0.5);}
+  select{width:100%;padding:12px;margin-bottom:15px;background:#333;color:white;border:1px solid #555;border-radius:5px;font-size:16px;}
+</style>
+</head><body>
+  <div class="nav">
+    <div id="tab-tv" class="active" onclick="switchTab('tv')">📺 电视</div>
+    <div id="tab-ac" onclick="switchTab('ac')">❄️ 空调</div>
+    <div id="tab-cus" onclick="switchTab('cus')">🛠️ 自定义</div>
+  </div>
+
+  <div id="page-tv" class="page active-page">
+    <select id="tv-brand" onchange="setBrand('tv', this.value)">[[TV_OPTIONS]]</select>
+    <div class="grid-2">
+      <button class="btn-red" onclick="tv('power')">电源</button>
+      <button onclick="tv('mute')">静音</button>
+    </div>
+    <div class="grid-3">
+      <button onclick="tv('home')">主页</button>
+      <button onclick="tv('up')">上</button>
+      <button onclick="tv('menu')">菜单</button>
+      <button onclick="tv('left')">左</button>
+      <button class="btn-blue" onclick="tv('ok')">OK</button>
+      <button onclick="tv('right')">右</button>
+      <button onclick="tv('back')">返回</button>
+      <button onclick="tv('down')">下</button>
+      <button onclick="tv('source')">信号源</button>
+    </div>
+    <div class="grid-2">
+      <button onclick="tv('vol_up')">音量 +</button>
+      <button onclick="tv('ch_up')">频道 +</button>
+      <button onclick="tv('vol_down')">音量 -</button>
+      <button onclick="tv('ch_down')">频道 -</button>
+    </div>
+  </div>
+
+  <div id="page-ac" class="page">
+    <select id="ac-brand" onchange="setBrand('ac', this.value)">[[AC_OPTIONS]]</select>
+    <div class="lcd" id="ac-lcd">加载状态中...</div>
+    <div class="grid-2">
+      <button class="btn-red" onclick="ac('power')">电源开关</button>
+      <button class="btn-blue" onclick="ac('mode')">切换模式</button>
+      <button onclick="ac('temp_up')">温度 +</button>
+      <button onclick="ac('temp_down')">温度 -</button>
+    </div>
+    <div class="grid-3">
+      <button onclick="ac('fan')">风速</button>
+      <button onclick="ac('swing_v')">上下扫风</button>
+      <button onclick="ac('swing_h')">左右扫风</button>
+      <button onclick="ac('sleep')">睡眠</button>
+      <button onclick="ac('turbo')">强劲</button>
+      <button onclick="ac('light')">灯光</button>
+      <button onclick="ac('beep')">蜂鸣器</button>
+      <button onclick="ac('quiet')">静音模式</button>
+    </div>
+  </div>
+
+  <div id="page-cus" class="page">
+    <select id="grp-sel">[[CUSTOM_OPTIONS]]</select>
+    <div class="grid-3">
+      <button class="btn-red" onclick="cus(0)">电源</button>
+      <button onclick="cus(1)">音量+</button>
+      <button onclick="cus(2)">音量-</button>
+      <button onclick="cus(3)">频道+</button>
+      <button onclick="cus(4)">频道-</button>
+      <button onclick="cus(5)">静音</button>
+      <button onclick="cus(6)">上</button>
+      <button onclick="cus(7)">下</button>
+      <button onclick="cus(8)">左</button>
+      <button onclick="cus(9)">右</button>
+      <button class="btn-blue" onclick="cus(10)">确认</button>
+      <button onclick="cus(11)">返回</button>
+      <button onclick="cus(12)">菜单</button>
+      <button onclick="cus(13)">主页</button>
+      <button onclick="cus(14)">信号源</button>
+    </div>
+  </div>
+
+<script>
+  const modes = ["冷", "热", "风", "湿", "自"];
+  const fans = ["自动", "低", "中", "高"];
+  function switchTab(t) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active-page'));
+    document.querySelectorAll('.nav div').forEach(n => n.classList.remove('active'));
+    document.getElementById('page-'+t).classList.add('active-page');
+    document.getElementById('tab-'+t).classList.add('active');
+    if(t === 'ac') syncAc();
+  }
+  function setBrand(type, val) { fetch('/api/set_brand?type='+type+'&val='+val).then(()=>{if(type==='ac')syncAc();}); }
+  function tv(cmd) { fetch('/api/tv?cmd='+cmd); }
+  function ac(cmd) { fetch('/api/ac?cmd='+cmd).then(()=>setTimeout(syncAc, 300)); }
+  function cus(act) { fetch('/api/custom?grp='+document.getElementById('grp-sel').value+'&act='+act); }
+  function syncAc() {
+    fetch('/api/state').then(r=>r.json()).then(d => {
+      document.getElementById('ac-lcd').innerHTML = `[${d.pow?"ON":"OFF"}] ${d.tmp}°C | 模式:${modes[d.mod]}<br>风速:${fans[d.fan]} | 上下:${d.swV?"开":"关"} | 左右:${d.swH?"开":"关"}`;
+    });
+  }
+  setInterval(syncAc, 5000);
+</script>
+</body></html>
+)rawliteral";
+
+// AP配网专用页面 (支持下拉扫描)
 const char* configHtml = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>遥控器 WiFi 配置</title>
-  <style>
-    body { font-family: Arial; text-align: center; margin-top: 50px; background-color: #121212; color: white; }
-    input { padding: 10px; margin: 10px; width: 80%; border-radius: 5px; border: 1px solid #ccc; }
-    input[type="submit"] { background-color: #4CAF50; color: white; font-weight: bold; border: none; cursor: pointer; }
-  </style>
-</head>
-<body>
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>遥控器 WiFi 配置</title>
+<style>
+  body{font-family:Arial;text-align:center;margin-top:40px;background:#121212;color:white;}
+  input, select{padding:12px;margin:10px 0;width:90%;border-radius:5px;border:1px solid #555;background:#333;color:white;}
+  input[type="submit"]{background:#4CAF50;font-weight:bold;border:none;cursor:pointer;margin-top:20px;}
+</style>
+</head><body>
   <h2>⚙️ 遥控器配网</h2>
   <form action="/save_wifi" method="GET">
-    <input type="text" name="ssid" placeholder="请输入家里的 WiFi 名称" required><br>
+    <label>选择附近 WiFi:</label><br>
+    <select name="ssid">
+      <option value="">-- 请下拉选择 --</option>
+      [[WIFI_LIST]]
+    </select><br><br>
+    <label>或手动输入名称 (针对隐藏网络):</label><br>
+    <input type="text" name="ssid_manual" placeholder="如果没扫到,请在此输入"><br><br>
+    <label>WiFi 密码:</label><br>
     <input type="text" name="pass" placeholder="请输入 WiFi 密码"><br>
     <input type="submit" value="保存并重启设备">
   </form>
-</body>
-</html>
+</body></html>
 )rawliteral";
 
 #define PIN_OLED_SDA 21
@@ -98,7 +209,7 @@ Preferences prefs;
 IRac ac(PIN_IR_TX);
 
 // ================= 状态机与菜单引擎 =================
-enum AppState { BOOT, MAIN_MENU, TV_MENU, TV_BRAND, AC_MENU, LEARN_GRP, LEARN_ACT, LEARN_WAIT, CUSTOM_GRP, CUSTOM_ACT, SETTINGS_MENU, GRP_MANAGE, RENAME_SEL, RENAME_EDIT, GRP_INSERT_SEL, GRP_DELETE_SEL, SIGNAL_ANALYSIS, WIFI_CONFIG_AP };
+enum AppState { BOOT, MAIN_MENU, TV_MENU, TV_BRAND, AC_MENU, LEARN_GRP, LEARN_ACT, LEARN_WAIT, CUSTOM_GRP, CUSTOM_ACT, SETTINGS_MENU, GRP_MANAGE, RENAME_SEL, RENAME_EDIT, GRP_INSERT_SEL, GRP_DELETE_SEL, SIGNAL_ANALYSIS, WIFI_MENU, WIFI_CONFIG_AP };
 AppState currentState = BOOT;
 
 int cursorIndex = 0;
@@ -285,60 +396,175 @@ void initGroupNames() {
   for (int i = 0; i < customGroupCount; i++) buildGroupName(i);
 }
 
+// ================= 🌐 网页动态渲染引擎 =================
+String getCustomGroupOptions() {
+  String html = "";
+  for (int i = 0; i < customGroupCount; i++) {
+    // 提取组名，如果没有定义就显示 "未命名组"
+    String name = customGroupStrs[i].length() > 3 ? customGroupStrs[i] : ("未命名组 " + String(i + 1));
+    html += "<option value='" + String(i) + "'>" + name + "</option>";
+  }
+  return html;
+}
+
+String getTVOptions() {
+  String html = "";
+  for (int i = 0; i < TV_BRAND_COUNT; i++) {
+    html += "<option value='" + String(i) + "'" + (i == currentTVBrand ? " selected" : "") + ">" + String(tvDatabase[i].brandName) + "</option>";
+  }
+  return html;
+}
+
+String getACOptions() {
+  String html = "";
+  for (int i = 0; i < AC_BRAND_COUNT; i++) {
+    html += "<option value='" + String(i) + "'" + (i == acBrandIndex ? " selected" : "") + ">" + typeToString(acProtocols[i]) + "</option>";
+  }
+  return html;
+}
+
 // ================= 🌐 Web 路由处理引擎 =================
 void setupWebHandlers() {
-  // 1. 访问主页时，下发 HTML 界面
+  // 1. 简易版主页
   server.on("/", HTTP_GET, []() {
-    server.send(200, "text/html", htmlPage);
+    server.send(200, "text/html", htmlSimple);
   });
 
-  // 2. 电视控制 API
+  // 2. 专业版主页 (动态注入自定义组名单)
+  // 替换现有的 /pro 路由
+  server.on("/pro", HTTP_GET, []() {
+    String page = htmlPro;
+    page.replace("[[CUSTOM_OPTIONS]]", getCustomGroupOptions());
+    page.replace("[[TV_OPTIONS]]", getTVOptions());
+    page.replace("[[AC_OPTIONS]]", getACOptions());
+    server.send(200, "text/html", page);
+  });
+
+  // 新增：动态修改品牌的 API
+  server.on("/api/set_brand", HTTP_GET, []() {
+    if (server.hasArg("type") && server.hasArg("val")) {
+      String type = server.arg("type");
+      int val = server.arg("val").toInt();
+      if (type == "tv" && val >= 0 && val < TV_BRAND_COUNT) {
+        currentTVBrand = val;
+        prefs.putInt("tvBrand", currentTVBrand);
+      } else if (type == "ac" && val >= 0 && val < AC_BRAND_COUNT) {
+        acBrandIndex = val;
+        prefs.putInt("acBrand", acBrandIndex);
+      }
+      needsRedraw = true; // 同步刷新硬件 OLED 屏幕
+    }
+    server.send(200, "text/plain", "Brand OK");
+  });
+
+  // 3. 状态回传 API (供 Pro 版 LCD 屏幕读取)
+  server.on("/api/state", HTTP_GET, []() {
+    String json = "{";
+    json += "\"pow\":" + String(acPower ? 1 : 0) + ",";
+    json += "\"mod\":" + String(acMode) + ",";
+    json += "\"tmp\":" + String(acTemp) + ",";
+    json += "\"fan\":" + String(acFan) + ",";
+    json += "\"swV\":" + String(acSwingV ? 1 : 0) + ",";
+    json += "\"swH\":" + String(acSwingH ? 1 : 0) + ",";
+    json += "\"slp\":" + String(acSleep ? 1 : 0) + ",";
+    json += "\"tur\":" + String(acTurbo ? 1 : 0) + ",";
+    json += "\"lig\":" + String(acLight ? 1 : 0) + ",";
+    json += "\"bep\":" + String(acBeep ? 1 : 0) + ",";
+    json += "\"qui\":" + String(acQuiet ? 1 : 0);
+    json += "}";
+    server.send(200, "application/json", json);
+  });
+
+  // 4. 全功能 TV API
   server.on("/api/tv", HTTP_GET, []() {
     if (server.hasArg("cmd")) {
       String cmd = server.arg("cmd");
-      if (cmd == "power") sendTVCommand(currentTVBrand, 1);     // 索引 1 通常是电源
-      else if (cmd == "vol_up") sendTVCommand(currentTVBrand, 2); // 索引 2 是音量+
-      else if (cmd == "vol_down") sendTVCommand(currentTVBrand, 3);
-      else if (cmd == "mute") sendTVCommand(currentTVBrand, 6);
+      int actIdx = -1;
+      if (cmd == "power") actIdx = 0;
+      else if (cmd == "vol_up") actIdx = 1;
+      else if (cmd == "vol_down") actIdx = 2;
+      else if (cmd == "ch_up") actIdx = 3;
+      else if (cmd == "ch_down") actIdx = 4;
+      else if (cmd == "mute") actIdx = 5;
+      else if (cmd == "up") actIdx = 6;
+      else if (cmd == "down") actIdx = 7;
+      else if (cmd == "left") actIdx = 8;
+      else if (cmd == "right") actIdx = 9;
+      else if (cmd == "ok") actIdx = 10;
+      else if (cmd == "back") actIdx = 11;
+      else if (cmd == "home") actIdx = 12;
+      else if (cmd == "menu") actIdx = 13;
+      else if (cmd == "source") actIdx = 14;
+      
+      if (actIdx != -1) sendTVCommand(currentTVBrand, actIdx);
     }
     server.send(200, "text/plain", "TV OK");
   });
 
-  // 3. 空调控制 API (联动屏幕与全局变量)
+  // 5. 全功能 AC API
   server.on("/api/ac", HTTP_GET, []() {
     if (server.hasArg("cmd")) {
       String cmd = server.arg("cmd");
       if (cmd == "power") acPower = !acPower;
       else if (cmd == "temp_up" && acTemp < 30) acTemp++;
       else if (cmd == "temp_down" && acTemp > 16) acTemp--;
-      else if (cmd == "swing") acSwingV = !acSwingV;
+      else if (cmd == "mode") acMode = (acMode + 1) % 5;
+      else if (cmd == "fan") acFan = (acFan + 1) % 4;
+      else if (cmd == "swing_v") acSwingV = !acSwingV;
+      else if (cmd == "swing_h") acSwingH = !acSwingH;
+      else if (cmd == "sleep") acSleep = !acSleep;
+      else if (cmd == "turbo") acTurbo = !acTurbo;
+      else if (cmd == "light") acLight = !acLight;
+      else if (cmd == "beep") acBeep = !acBeep;
+      else if (cmd == "quiet") acQuiet = !acQuiet;
       
-      // 发送红外信号
       sendACCommand(); 
       needsRedraw = true; 
       
-      // 👉 顺手把核心状态存入 NVS，实现网络修改也能断电记忆
+      // 断电保存核心状态
       prefs.putBool("acPower", acPower);
+      prefs.putInt("acMode", acMode);
       prefs.putInt("acTemp", acTemp);
+      prefs.putInt("acFan", acFan);
       prefs.putBool("acSwingV", acSwingV);
+      prefs.putBool("acSwingH", acSwingH);
     }
     server.send(200, "text/plain", "AC OK");
   });
 
-  // === 新增：配网页面与保存接口 ===
-  server.on("/wifi", HTTP_GET, []() {
-    server.send(200, "text/html", configHtml);
+  // 6. 自定义组控制 API
+  server.on("/api/custom", HTTP_GET, []() {
+    if (server.hasArg("grp") && server.hasArg("act")) {
+      int grp = server.arg("grp").toInt();
+      int act = server.arg("act").toInt();
+      sendCustomCommand(grp, act);
+    }
+    server.send(200, "text/plain", "Custom OK");
   });
 
+  // === 保留配网路由 ===
+  // 替换现有的 /wifi 路由 (执行 WiFi 扫描)
+  server.on("/wifi", HTTP_GET, []() {
+    int n = WiFi.scanNetworks();
+    String wifiList = "";
+    for (int i = 0; i < n; ++i) {
+      wifiList += "<option value='" + WiFi.SSID(i) + "'>" + WiFi.SSID(i) + " (" + String(WiFi.RSSI(i)) + "dBm)</option>";
+    }
+    String page = configHtml;
+    page.replace("[[WIFI_LIST]]", wifiList);
+    server.send(200, "text/html", page);
+  });
+
+  // 替换现有的 /save_wifi 路由 (支持手动覆盖)
   server.on("/save_wifi", HTTP_GET, []() {
     String newSSID = server.arg("ssid");
-    String newPASS = server.arg("pass");
+    if (server.hasArg("ssid_manual") && server.arg("ssid_manual").length() > 0) {
+      newSSID = server.arg("ssid_manual");
+    }
     prefs.putString("ssid", newSSID);
-    prefs.putString("pass", newPASS);
-    
-    server.send(200, "text/html", "<h2 style='color:green;text-align:center;margin-top:50px;'>配置已保存！<br>遥控器正在重启...</h2>");
-    delay(1500);
-    ESP.restart(); // 收到密码后直接硬重启
+    prefs.putString("pass", server.arg("pass"));
+    server.send(200, "text/html", "<h2 style='color:green;text-align:center;margin-top:50px;'>配置已保存！<br>重启中...</h2>");
+    delay(1500); ESP.restart(); 
   });
 }
 
@@ -376,6 +602,8 @@ void setup() {
   u8g2.enableUTF8Print();
   u8g2.setContrast(sysBrightness);
   u8g2.setBusClock(400000);
+
+  u8g2.setFont(u8g2_font_wqy12_t_gb2312a);
 
   // 替换 setup() 中原来的 WiFi.begin(ssid, password) 相关代码段：
   
@@ -588,6 +816,16 @@ void readEncoder() {
   }
 }
 
+void startAPConfig() {
+  WiFi.disconnect();
+  // 必须使用 WIFI_AP_STA，否则网页端无法执行 WiFi.scanNetworks()
+  WiFi.mode(WIFI_AP_STA); 
+  WiFi.softAP("ESP32_Remote"); 
+  setupWebHandlers();
+  server.begin();
+  changeMenu(WIFI_CONFIG_AP, 1);
+}
+
 // ---------------- 按键逻辑 ----------------
 void handleShortPress() {
   if (isEditing) {
@@ -674,13 +912,9 @@ void handleShortPress() {
     case SETTINGS_MENU:
       if (cursorIndex == 0) isEditing = true;
       else if (cursorIndex == 1) {
-        // === 新增：开启 AP 热点并进入配网状态 ===
-        WiFi.disconnect();
-        WiFi.mode(WIFI_AP);
-        WiFi.softAP("ESP32_Remote"); 
-        setupWebHandlers();
-        server.begin();
-        changeMenu(WIFI_CONFIG_AP, 1);
+        // 智能判断：根据当前连接状态决定子菜单长度
+        int count = (WiFi.status() == WL_CONNECTED || savedSSID.length() > 0) ? 2 : 1;
+        changeMenu(WIFI_MENU, count);
       }
       else if (cursorIndex == 2) {
         analyzedProtocol = "等待接收...";
@@ -706,6 +940,24 @@ void handleShortPress() {
         showToast("系统已重置!");
       } 
       else if (cursorIndex == 6) showToast("Ver 12.0 | Ultimate"); // 原来这里是 5，现修正为 6
+      break;
+
+    case WIFI_MENU:
+      if (WiFi.status() == WL_CONNECTED) {
+        if (cursorIndex == 0) showToast(WiFi.localIP().toString().c_str());
+        else if (cursorIndex == 1) startAPConfig();
+      } else if (savedSSID.length() > 0) {
+        if (cursorIndex == 0) {
+          showToast("正在连接...");
+          WiFi.begin(savedSSID.c_str(), savedPASS.c_str());
+          int t = 0;
+          while (WiFi.status() != WL_CONNECTED && t < 10) { delay(500); t++; }
+          if (WiFi.status() == WL_CONNECTED) showToast("连接成功!");
+          else showToast("连接超时!");
+        } else if (cursorIndex == 1) startAPConfig();
+      } else {
+        if (cursorIndex == 0) startAPConfig();
+      }
       break;
 
     case GRP_MANAGE:
@@ -812,6 +1064,10 @@ void handleLongPress() {
   } else if (currentState == WIFI_CONFIG_AP) {
     // 退出配网时重启设备以恢复常规模式
     ESP.restart(); 
+  } else if (currentState == WIFI_MENU) {
+    prevState = SETTINGS_MENU;
+    prevItemCount = 7;
+    prevCursor = 1;
   }
 
   changeMenu(prevState, prevItemCount);
@@ -936,7 +1192,6 @@ void sendCustomCommand(int grp, int act) {
 void updateDisplay() {
   if (!needsRedraw) return;
   u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_wqy12_t_gb2312a);
 
   switch (currentState) {
     case MAIN_MENU: drawScrollMenu("主菜单", mainMenuItems); break;
@@ -1063,6 +1318,23 @@ void updateDisplay() {
       u8g2.setCursor(5, 58);
       u8g2.print("访问: 192.168.4.1/wifi");
       break;
+
+    case WIFI_MENU:
+      {
+        const char* items[2];
+        int count = 0;
+        if (WiFi.status() == WL_CONNECTED) {
+          items[count++] = "1. 查看本机 IP";
+          items[count++] = "2. 重新配网 (AP热点)";
+        } else if (savedSSID.length() > 0) {
+          items[count++] = "1. 重新连接 WiFi";
+          items[count++] = "2. 重新配网 (AP热点)";
+        } else {
+          items[count++] = "1. 开启配网 (AP热点)";
+        }
+        drawScrollMenu("WiFi 网络管理", items);
+        break;
+      }
 
     default:
       u8g2.setCursor(10, 30);
