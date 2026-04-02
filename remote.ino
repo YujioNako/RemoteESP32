@@ -26,12 +26,15 @@ const char* htmlSimple = R"rawliteral(
   body{font-family:Arial;text-align:center;margin-top:20px;background:#121212;color:white;}
   button{padding:15px;margin:8px;font-size:18px;width:40%;border-radius:8px;border:none;color:white;cursor:pointer;}
   .tv-btn{background:#2196F3;} .ac-btn{background:#FF9800;}
+  .sys-btn{background:#607D8B; width:85%;}
   .pro-link{display:block;margin-top:30px;color:#4CAF50;text-decoration:none;font-size:18px;}
 </style>
 <script>function sendCmd(u){fetch(u);}</script>
 </head><body>
   <h2>📡 简易控制面板</h2>
   <h3>📺 电视控制 (当前品牌)</h3>
+  <button class="sys-btn" onclick="sendCmd('/api/screen')">息屏 / 亮屏</button>
+  <br>
   <button class="tv-btn" onclick="sendCmd('/api/tv?cmd=power')">电源 (Power)</button>
   <button class="tv-btn" onclick="sendCmd('/api/tv?cmd=mute')">静音 (Mute)</button>
   <br>
@@ -73,7 +76,8 @@ const char* htmlPro = R"rawliteral(
   <div class="nav">
     <div id="tab-tv" class="active" onclick="switchTab('tv')">📺 电视</div>
     <div id="tab-ac" onclick="switchTab('ac')">❄️ 空调</div>
-    <div id="tab-cus" onclick="switchTab('cus')">🛠️ 自定义</div>
+    <div id="tab-cus" onclick="switchTab('cus')">🛠️ 自定</div>
+    <div onclick="fetch('/api/screen')">💡 屏幕</div>
   </div>
 
   <div id="page-tv" class="page active-page">
@@ -566,6 +570,19 @@ void setupWebHandlers() {
     server.send(200, "text/html", "<h2 style='color:green;text-align:center;margin-top:50px;'>配置已保存！<br>重启中...</h2>");
     delay(1500); ESP.restart(); 
   });
+
+  server.on("/api/screen", HTTP_GET, []() {
+    if (sysBrightness > 0) {
+      prefs.putInt("lastBright", sysBrightness); // 记住关屏前的亮度
+      sysBrightness = 0;
+    } else {
+      sysBrightness = prefs.getInt("lastBright", 128); // 恢复之前的亮度
+      if (sysBrightness == 0) sysBrightness = 15;      // 兜底保护
+    }
+    u8g2.setContrast(sysBrightness);
+    prefs.putInt("brightness", sysBrightness);
+    server.send(200, "text/plain", "Screen OK");
+  });
 }
 
 // ================= 生命周期 =================
@@ -612,6 +629,7 @@ void setup() {
 
   if (savedSSID.length() > 0) {
     WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true); // 👉 加上这行，启用 ESP32 底层自动重连机制
     WiFi.begin(savedSSID.c_str(), savedPASS.c_str());
     
     u8g2.clearBuffer();
@@ -654,27 +672,31 @@ void setup() {
   changeMenu(MAIN_MENU, 5);
 }
 
+unsigned long lastWifiCheckTime = 0; // 全局防掉线心跳时间戳
+
 void loop() {
-  // 修改 loop() 开头的 Web 请求监听逻辑
+  // === 1. 无阻塞的网络处理与自动断线重连 ===
   if (WiFi.status() == WL_CONNECTED || currentState == WIFI_CONFIG_AP) {
     server.handleClient();
+  } else if (savedSSID.length() > 0 && currentState != WIFI_CONFIG_AP) {
+    // 弱网或断线时，每隔 15 秒手动踹一脚重连，绝不卡死主循环
+    if (millis() - lastWifiCheckTime > 15000) {
+      lastWifiCheckTime = millis();
+      WiFi.reconnect();
+    }
   }
 
+  // === 2. 旋钮与信号检测 ===
   readEncoder();
 
-  // 学习捕获
   if (currentState == LEARN_WAIT) {
     if (irrecv.decode(&results)) {
-      // 核心修改：如果是 UNKNOWN，只要脉冲长度大于 20，我们就认为是有效的非标准协议信号
       if ((results.decode_type == UNKNOWN && results.rawlen < 20) || (results.decode_type != UNKNOWN && results.bits < 8)) {
         showToast("Error! 信号太弱");
       } else {
         saveIRCode(targetGroup, targetAction, &results);
-        if (results.decode_type == UNKNOWN) {
-          showToast("RAW Saved!"); // 提示保存了生数据
-        } else {
-          showToast("Saved OK!");
-        }
+        if (results.decode_type == UNKNOWN) showToast("RAW Saved!"); 
+        else showToast("Saved OK!");
         changeMenu(LEARN_ACT, CUSTOM_ACT_COUNT);
       }
       irrecv.resume();
@@ -690,22 +712,13 @@ void loop() {
       if (analyzedDesc.length() > 2) {
         analyzedDesc.replace("\n", " | ");
         analyzedDesc.replace("\r", "");
-        if (analyzedDesc.endsWith(" | ")) {
-          analyzedDesc = analyzedDesc.substring(0, analyzedDesc.length() - 3);
-        }
+        if (analyzedDesc.endsWith(" | ")) analyzedDesc = analyzedDesc.substring(0, analyzedDesc.length() - 3);
       } else {
-        // 优雅降级显示
-        if (results.decode_type == UNKNOWN) {
-          // 针对未知协议，显示原始脉冲数
-          analyzedDesc = "未知协议 | 脉冲数量: " + String(results.rawlen) + " | 基本指令位宽: " + String(results.bits) + " Bits";
-        } else {
-          // 标准红外按键，显示位宽
-          analyzedDesc = "基本指令位宽: " + String(results.bits) + " Bits";
-        }
+        if (results.decode_type == UNKNOWN) analyzedDesc = "未知协议 | 脉冲数: " + String(results.rawlen) + " | 位宽: " + String(results.bits);
+        else analyzedDesc = "指令位宽: " + String(results.bits) + " Bits";
       }
 
-      scrollX_val = 0;
-      scrollX_desc = 0;
+      scrollX_val = 0; scrollX_desc = 0;
       irrecv.resume();
       needsRedraw = true;
     }
@@ -732,9 +745,37 @@ void changeMenu(AppState newState, int itemsCount) {
 // ---------------- 旋钮与互动引擎 ----------------
 void readEncoder() {
   int currentClk = digitalRead(PIN_ENC_CLK);
-  if (currentClk != lastClk && currentClk == LOW) {
-    int direction = (digitalRead(PIN_ENC_DT) != currentClk) ? 1 : -1;
+  bool rotated = (currentClk != lastClk && currentClk == LOW);
+  int direction = 0;
+  if (rotated) {
+    direction = (digitalRead(PIN_ENC_DT) != currentClk) ? 1 : -1;
+  }
+  lastClk = currentClk;
 
+  bool pressed = false;
+  if (digitalRead(PIN_ENC_SW) == LOW && (millis() - lastButtonPress > 50)) {
+    pressed = true;
+  }
+
+  // === 【新增】黑屏防误触唤醒机制 ===
+  // 如果当前屏幕亮度是 0，任何按键和旋转都只用于“点亮屏幕到亮度15”，且吃掉这次操作不触发逻辑。
+  if ((rotated || pressed) && sysBrightness == 0) {
+    sysBrightness = 15;
+    u8g2.setContrast(sysBrightness);
+    prefs.putInt("brightness", sysBrightness);
+    needsRedraw = true;
+
+    // 如果是按键唤醒的，在此处等他松手，防止穿透误触
+    if (pressed) {
+      unsigned long pt = millis();
+      while (digitalRead(PIN_ENC_SW) == LOW) { if (millis() - pt > 600) break; delay(10); }
+      lastButtonPress = millis();
+    }
+    return; // 唤醒后直接 return，放弃原定的操作
+  }
+
+  // === 正常的逻辑 ===
+  if (rotated) {
     if (isEditing) {
       if (currentState == SETTINGS_MENU && cursorIndex == 0) {
         sysBrightness += direction * 15;
@@ -746,9 +787,8 @@ void readEncoder() {
           acBrandIndex += direction;
           if (acBrandIndex >= AC_BRAND_COUNT) acBrandIndex = 0;
           if (acBrandIndex < 0) acBrandIndex = AC_BRAND_COUNT - 1;
-        } else if (cursorIndex == 1) {
-          acPower = !acPower;
-        } else if (cursorIndex == 2) {
+        } else if (cursorIndex == 1) acPower = !acPower;
+        else if (cursorIndex == 2) {
           acMode += direction;
           if (acMode > 4) acMode = 0;
           if (acMode < 0) acMode = 4;
@@ -760,21 +800,13 @@ void readEncoder() {
           acFan += direction;
           if (acFan > 3) acFan = 0;
           if (acFan < 0) acFan = 3;
-        } else if (cursorIndex == 5) {
-          acSwingV = !acSwingV;  // 上下扫风
-        } else if (cursorIndex == 6) {
-          acSwingH = !acSwingH;  // 左右扫风
-        } else if (cursorIndex == 7) {
-          acSleep = !acSleep;    // 后续序号依次 +1
-        } else if (cursorIndex == 8) {
-          acTurbo = !acTurbo;
-        } else if (cursorIndex == 9) {
-          acLight = !acLight;
-        } else if (cursorIndex == 10) {
-          acBeep = !acBeep;
-        } else if (cursorIndex == 11) {
-          acQuiet = !acQuiet;
-        }
+        } else if (cursorIndex == 5) acSwingV = !acSwingV;
+        else if (cursorIndex == 6) acSwingH = !acSwingH;
+        else if (cursorIndex == 7) acSleep = !acSleep;
+        else if (cursorIndex == 8) acTurbo = !acTurbo;
+        else if (cursorIndex == 9) acLight = !acLight;
+        else if (cursorIndex == 10) acBeep = !acBeep;
+        else if (cursorIndex == 11) acQuiet = !acQuiet;
       } else if (currentState == RENAME_EDIT) {
         if (cursorIndex == 0) {
           tempLoc += direction;
@@ -799,20 +831,17 @@ void readEncoder() {
     }
     needsRedraw = true;
   }
-  lastClk = currentClk;
 
-  if (digitalRead(PIN_ENC_SW) == LOW) {
-    if (millis() - lastButtonPress > 50) {
-      unsigned long pressTime = millis();
-      while (digitalRead(PIN_ENC_SW) == LOW) {
-        if (millis() - pressTime > 600) isLongPress = true;
-      }
-      if (isLongPress) handleLongPress();
-      else handleShortPress();
-      isLongPress = false;
-      lastButtonPress = millis();
-      needsRedraw = true;
+  if (pressed) {
+    unsigned long pressTime = millis();
+    while (digitalRead(PIN_ENC_SW) == LOW) {
+      if (millis() - pressTime > 600) isLongPress = true;
     }
+    if (isLongPress) handleLongPress();
+    else handleShortPress();
+    isLongPress = false;
+    lastButtonPress = millis();
+    needsRedraw = true;
   }
 }
 
