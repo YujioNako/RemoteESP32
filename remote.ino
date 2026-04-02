@@ -29,11 +29,27 @@ const char* htmlSimple = R"rawliteral(
   .sys-btn{background:#607D8B; width:85%;}
   .pro-link{display:block;margin-top:30px;color:#4CAF50;text-decoration:none;font-size:18px;}
 </style>
-<script>function sendCmd(u){fetch(u);}</script>
+<script>
+  function sendCmd(u){fetch(u);}
+  function toggleScr(){ fetch('/api/screen').then(()=>setTimeout(syncScr, 300)); }
+  function syncScr(){
+    fetch('/api/state').then(r=>r.json()).then(d=>{
+      let btn = document.getElementById('btn-scr');
+      if(d.scr) {
+        btn.innerText = "💡 熄灭屏幕";
+        btn.className = "sys-btn";
+      } else {
+        btn.innerText = "🌙 点亮屏幕";
+        btn.className = "sys-btn sys-btn-off";
+      }
+    });
+  }
+  window.onload = syncScr;
+</script>
 </head><body>
   <h2>📡 简易控制面板</h2>
+  <button id="btn-scr" class="sys-btn" onclick="toggleScr()">💡 加载屏幕状态...</button>
   <h3>📺 电视控制 (当前品牌)</h3>
-  <button class="sys-btn" onclick="sendCmd('/api/screen')">息屏 / 亮屏</button>
   <br>
   <button class="tv-btn" onclick="sendCmd('/api/tv?cmd=power')">电源 (Power)</button>
   <button class="tv-btn" onclick="sendCmd('/api/tv?cmd=mute')">静音 (Mute)</button>
@@ -60,7 +76,7 @@ const char* htmlPro = R"rawliteral(
 <style>
   body{font-family:Arial;margin:0;padding:0;background:#1a1a1a;color:#eee;}
   .nav{display:flex;background:#333;position:fixed;top:0;width:100%;}
-  .nav div{flex:1;text-align:center;padding:15px;cursor:pointer;font-weight:bold;}
+  .nav div{flex:1;text-align:center;padding:15px;cursor:pointer;font-weight:bold;transition:0.3s;}
   .nav .active{background:#4CAF50;color:white;}
   .page{display:none;padding:70px 15px 20px 15px;}
   .active-page{display:block;}
@@ -77,7 +93,7 @@ const char* htmlPro = R"rawliteral(
     <div id="tab-tv" class="active" onclick="switchTab('tv')">📺 电视</div>
     <div id="tab-ac" onclick="switchTab('ac')">❄️ 空调</div>
     <div id="tab-cus" onclick="switchTab('cus')">🛠️ 自定</div>
-    <div onclick="fetch('/api/screen')">💡 屏幕</div>
+    <div id="tab-scr" onclick="toggleScr()">💡 息屏</div>
   </div>
 
   <div id="page-tv" class="page active-page">
@@ -155,18 +171,34 @@ const char* htmlPro = R"rawliteral(
     document.querySelectorAll('.nav div').forEach(n => n.classList.remove('active'));
     document.getElementById('page-'+t).classList.add('active-page');
     document.getElementById('tab-'+t).classList.add('active');
-    if(t === 'ac') syncAc();
   }
-  function setBrand(type, val) { fetch('/api/set_brand?type='+type+'&val='+val).then(()=>{if(type==='ac')syncAc();}); }
+  function setBrand(type, val) { fetch('/api/set_brand?type='+type+'&val='+val).then(()=>{if(type==='ac')syncState();}); }
   function tv(cmd) { fetch('/api/tv?cmd='+cmd); }
-  function ac(cmd) { fetch('/api/ac?cmd='+cmd).then(()=>setTimeout(syncAc, 300)); }
+  function ac(cmd) { fetch('/api/ac?cmd='+cmd).then(()=>setTimeout(syncState, 300)); }
   function cus(act) { fetch('/api/custom?grp='+document.getElementById('grp-sel').value+'&act='+act); }
-  function syncAc() {
+  function toggleScr() { fetch('/api/screen').then(()=>setTimeout(syncState, 300)); }
+  
+  // 核心：全状态抓取函数
+  function syncState() {
     fetch('/api/state').then(r=>r.json()).then(d => {
+      // 1. 刷新空调 LCD
       document.getElementById('ac-lcd').innerHTML = `[${d.pow?"ON":"OFF"}] ${d.tmp}°C | 模式:${modes[d.mod]}<br>风速:${fans[d.fan]} | 上下:${d.swV?"开":"关"} | 左右:${d.swH?"开":"关"}`;
+      
+      // 2. 刷新顶部屏幕状态按钮
+      let scrBtn = document.getElementById('tab-scr');
+      if(d.scr) {
+        scrBtn.innerText = "💡 息屏";
+        scrBtn.style.color = "white";
+      } else {
+        scrBtn.innerText = "🌙 亮屏";
+        scrBtn.style.color = "#aaa";
+      }
     });
   }
-  setInterval(syncAc, 5000);
+  
+  // 页面加载完成时执行一次，之后每 5 秒轮询一次
+  window.onload = syncState;
+  setInterval(syncState, 5000);
 </script>
 </body></html>
 )rawliteral";
@@ -474,7 +506,8 @@ void setupWebHandlers() {
     json += "\"tur\":" + String(acTurbo ? 1 : 0) + ",";
     json += "\"lig\":" + String(acLight ? 1 : 0) + ",";
     json += "\"bep\":" + String(acBeep ? 1 : 0) + ",";
-    json += "\"qui\":" + String(acQuiet ? 1 : 0);
+    json += "\"qui\":" + String(acQuiet ? 1 : 0)+ ",";
+    json += "\"scr\":" + String(sysBrightness > 0 ? 1 : 0);
     json += "}";
     server.send(200, "application/json", json);
   });
