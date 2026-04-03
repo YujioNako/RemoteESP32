@@ -606,13 +606,15 @@ void setupWebHandlers() {
 
   server.on("/api/screen", HTTP_GET, []() {
     if (sysBrightness > 0) {
-      prefs.putInt("lastBright", sysBrightness); // 记住关屏前的亮度
+      prefs.putInt("lastBright", sysBrightness);
       sysBrightness = 0;
+      u8g2.setPowerSave(1); // 👉 开启省电模式，彻底关闭 OLED 内部升压电路
     } else {
-      sysBrightness = prefs.getInt("lastBright", 128); // 恢复之前的亮度
-      if (sysBrightness == 0) sysBrightness = 15;      // 兜底保护
+      sysBrightness = prefs.getInt("lastBright", 128);
+      if (sysBrightness == 0) sysBrightness = 15;
+      u8g2.setPowerSave(0); // 👉 唤醒屏幕
+      u8g2.setContrast(sysBrightness);
     }
-    u8g2.setContrast(sysBrightness);
     prefs.putInt("brightness", sysBrightness);
     server.send(200, "text/plain", "Screen OK");
   });
@@ -664,6 +666,9 @@ void setup() {
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true); // 👉 加上这行，启用 ESP32 底层自动重连机制
     WiFi.begin(savedSSID.c_str(), savedPASS.c_str());
+
+    // 👇 新增这行：开启最小调制解调器休眠（保持网络畅通同时大幅省电）
+    WiFi.setSleep(WIFI_PS_MIN_MODEM);
     
     u8g2.clearBuffer();
     u8g2.setCursor(15, 30);
@@ -794,17 +799,19 @@ void readEncoder() {
   // 如果当前屏幕亮度是 0，任何按键和旋转都只用于“点亮屏幕到亮度15”，且吃掉这次操作不触发逻辑。
   if ((rotated || pressed) && sysBrightness == 0) {
     sysBrightness = 15;
+    
+    u8g2.setPowerSave(0); // 👉 唤醒屏幕内部电源
     u8g2.setContrast(sysBrightness);
+    
     prefs.putInt("brightness", sysBrightness);
     needsRedraw = true;
 
-    // 如果是按键唤醒的，在此处等他松手，防止穿透误触
     if (pressed) {
       unsigned long pt = millis();
       while (digitalRead(PIN_ENC_SW) == LOW) { if (millis() - pt > 600) break; delay(10); }
       lastButtonPress = millis();
     }
-    return; // 唤醒后直接 return，放弃原定的操作
+    return;
   }
 
   // === 正常的逻辑 ===
